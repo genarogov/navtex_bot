@@ -3,21 +3,14 @@ from bs4 import BeautifulSoup
 import telegram
 import os
 import re
+import time
 
-# =============================
-# Telegram настройки
-# =============================
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 bot = telegram.Bot(token=TOKEN)
 
-# =============================
-# Файл последнего ID
-# =============================
 last_id_file = "last_id.txt"
-
-first_run = not os.path.exists(last_id_file)
 
 try:
     with open(last_id_file, "r") as f:
@@ -25,156 +18,187 @@ try:
 except:
     last_id = ""
 
-# =============================
-# Headers для gov.il
-# =============================
-headers = {
-    "User-Agent": "Mozilla/5.0"
-}
+offset = None
 
-# =============================
-# Страница Notice to Mariners
-# =============================
-url = "https://www.gov.il/en/Departments/DynamicCollectors/notice-to-mariners"
 
-r = requests.get(url, headers=headers)
-soup = BeautifulSoup(r.text, "html.parser")
+def get_links():
 
-# =============================
-# Поиск ссылок
-# =============================
-links = []
+    url = "https://www.gov.il/en/Departments/DynamicCollectors/notice-to-mariners"
 
-for a in soup.find_all("a", href=True):
+    r = requests.get(url, timeout=20)
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    href = a["href"]
+    links = []
 
-    if "/en/departments/publications/" in href:
+    for a in soup.find_all("a", href=True):
 
-        msg_id = href.split("/")[-1]
-        full_url = "https://www.gov.il" + href
+        href = a["href"]
 
-        links.append((msg_id, full_url))
+        if "/notice-to-mariners/" in href:
 
-# =============================
-# Функция извлечения координат
-# =============================
-def extract_coords(text):
+            full_url = "https://www.gov.il" + href
+            msg_id = href.split("/")[-1]
+
+            links.append((msg_id, full_url))
+
+    unique = []
+    ids = set()
+
+    for i in links:
+
+        if i[0] not in ids:
+
+            unique.append(i)
+            ids.add(i[0])
+
+    return unique[:5]
+
+
+def dms_to_dd(dms):
+
+    deg, rest = dms.split("°")
+    mins = float(rest[:-1])
+    sign = 1 if rest[-1] in "NE" else -1
+
+    return sign * (float(deg) + mins/60)
+
+
+def parse_notice(link):
+
+    page = requests.get(link, timeout=20)
+    soup = BeautifulSoup(page.text, "html.parser")
+
+    text = soup.get_text(separator="\n", strip=True)
 
     coords = re.findall(
-        r'(\d{1,2}°\d{1,2}\.\d+[NS])\s*(\d{1,3}°\d{1,2}\.\d+[EW])',
-        text
+        r'(\d{1,2}°\d{1,2}\.\d+[NS])\s*(\d{1,3}°\d{1,2}\.\d+[EW])', text
     )
 
-    if not coords:
-        return None
+    maps_link = ""
 
-    lat, lon = coords[0]
+    if coords:
 
-    def dms_to_dd(dms):
+        lat, lon = coords[0]
 
-        deg, rest = dms.split("°")
-        mins = float(rest[:-1])
-        direction = rest[-1]
+        lat_dd = dms_to_dd(lat)
+        lon_dd = dms_to_dd(lon)
 
-        dd = float(deg) + mins / 60
-
-        if direction in ["S", "W"]:
-            dd *= -1
-
-        return dd
-
-    lat_dd = dms_to_dd(lat)
-    lon_dd = dms_to_dd(lon)
-
-    maps_link = f"https://maps.google.com/?q={lat_dd},{lon_dd}"
-
-    return f"\n\n📍 {lat} {lon}\n{maps_link}"
-
-
-# =============================
-# Функция отправки notice
-# =============================
-def send_notice(link):
-
-    page = requests.get(link, headers=headers)
-    soup2 = BeautifulSoup(page.text, "html.parser")
-
-    text = soup2.get_text("\n", strip=True)
+        maps_link = f"https://maps.google.com/?q={lat_dd},{lon_dd}"
 
     message = text[:3500]
 
-    coords = extract_coords(text)
+    if maps_link:
 
-    if coords:
-        message += coords
+        message += f"\n\n📍 {lat} {lon}\n{maps_link}"
 
-    bot.send_message(
-        chat_id=CHAT_ID,
-        text=message
-    )
+    return message
 
 
-# =============================
-# Первый запуск → отправляем 5 последних
-# =============================
-if first_run:
+def send_last():
 
-    for msg_id, link in links[:5]:
-        send_notice(link)
+    links = get_links()
 
-    with open(last_id_file, "w") as f:
-        f.write(links[0][0])
+    for msg_id, link in reversed(links):
 
-    print("First run: sent last 5 notices")
-    exit()
+        message = parse_notice(link)
+
+        bot.send_message(chat_id=CHAT_ID, text=message)
+
+        time.sleep(1)
 
 
-# =============================
-# Поиск новых сообщений
-# =============================
-new_links = []
+def check_navtex():
 
-for msg_id, link in links:
+    global last_id
 
-    if msg_id == last_id:
-        break
+    links = get_links()
 
-    new_links.append((msg_id, link))
+    new_messages = []
+
+    for msg_id, link in links:
+
+        if msg_id == last_id:
+            break
+
+        new_messages.append((msg_id, link))
+
+    for msg_id, link in reversed(new_messages):
+
+        message = parse_notice(link)
+
+        bot.send_message(chat_id=CHAT_ID, text=message)
+
+        with open(last_id_file, "w") as f:
+            f.write(msg_id)
+
+        last_id = msg_id
+
+        time.sleep(1)
 
 
-# =============================
-# Отправка новых
-# =============================
-for msg_id, link in reversed(new_links):
+def check_commands():
 
-    send_notice(link)
+    global offset
 
-    with open(last_id_file, "w") as f:
-        f.write(msg_id)
+    updates = bot.get_updates(offset=offset, timeout=10)
 
-    print("Sent:", msg_id)
+    for update in updates:
+
+        offset = update.update_id + 1
+
+        if not update.message:
+            continue
+
+        text = update.message.text
+
+        if text == "/status":
+
+            bot.send_message(
+                chat_id=update.message.chat_id,
+                text="✅ NAVTEX bot is running",
+            )
+
+        if text == "/last":
+
+            bot.send_message(
+                chat_id=update.message.chat_id,
+                text="📡 Sending last 5 NAVTEX",
+            )
+
+            send_last()
 
 
-# =============================
-# Telegram команды
-# =============================
-updates = bot.get_updates(timeout=30)
+print("NAVTEX BOT STARTED")
 
-for update in updates:
+first_run = True
 
-    if not update.message:
-        continue
+while True:
 
-    text = update.message.text
-    chat_id = update.message.chat.id
+    try:
 
-    if text == "/last5":
+        if first_run:
 
-        for msg_id, link in links[:5]:
-            send_notice(link)
+            send_last()
 
-    if text == "/latest":
+            links = get_links()
 
-        msg_id, link = links[0]
-        send_notice(link)
+            if links:
+
+                with open(last_id_file, "w") as f:
+                    f.write(links[0][0])
+
+                last_id = links[0][0]
+
+            first_run = False
+
+        check_navtex()
+
+        check_commands()
+
+        time.sleep(120)
+
+    except Exception as e:
+
+        print("ERROR:", e)
+
+        time.sleep(60)
