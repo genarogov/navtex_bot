@@ -1,1 +1,1 @@
-worker: python navtex_bot.py
+worker: python bot.py
