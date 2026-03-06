@@ -159,7 +159,7 @@ for msg_id, link in reversed(new_links):
 # =============================
 # Telegram команды
 # =============================
-updates = bot.get_updates()
+updates = bot.get_updates(timeout=30)
 
 for update in updates:
 
