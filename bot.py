@@ -9,7 +9,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=TOKEN)
-CHECK_INTERVAL = 180  # 3 минуты
+CHECK_INTERVAL = 180  # проверка каждые 3 минуты
 
 # =====================
 # CACHE
@@ -34,9 +34,9 @@ cache = load_cache()
 RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 
 def format_rss_item(entry):
-    title = entry.get("title")
-    link = entry.get("link")
-    published = entry.get("published", "")
+    title = entry.get("title", "No title")
+    link = entry.get("link", "No link")
+    published = entry.get("published", "No date")
     return f"""
 NAVTEX Notice
 
@@ -54,7 +54,7 @@ def check_gov():
         print("GOV RSS ERROR:", e)
         return
     for entry in feed.entries[:5]:
-        nid = entry.get("id", entry.get("link"))
+        nid = entry.get("link")  # используем ссылку как уникальный идентификатор
         if nid in cache["gov"]:
             continue
         bot.send_message(CHAT_ID, format_rss_item(entry))
@@ -78,11 +78,20 @@ def lastgov(update: Update, context: CallbackContext):
     update.message.reply_text("Loading last GOV notices...")
     try:
         feed = feedparser.parse(RSS_URL)
-    except:
-        update.message.reply_text("Error loading GOV notices")
+    except Exception as e:
+        update.message.reply_text(f"Error loading GOV notices: {e}")
         return
+
+    if not feed.entries:
+        update.message.reply_text("No entries found in RSS.")
+        return
+
     for entry in feed.entries[:5]:
         update.message.reply_text(format_rss_item(entry))
+
+# Для удобства можно использовать также команду /last
+def last(update: Update, context: CallbackContext):
+    lastgov(update, context)
 
 # =====================
 # MAIN
@@ -93,6 +102,7 @@ def main():
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("test", test))
     dp.add_handler(CommandHandler("lastgov", lastgov))
+    dp.add_handler(CommandHandler("last", last))  # алиас для /lastgov
 
     updater.start_polling()
     print("GOV.il NAVTEX BOT STARTED")
