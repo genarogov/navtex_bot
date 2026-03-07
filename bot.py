@@ -1,9 +1,7 @@
 import os
-import re
 import json
 import time
-import requests
-from bs4 import BeautifulSoup
+import feedparser
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackContext
 
@@ -11,22 +9,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=TOKEN)
-CHECK_INTERVAL = 180
-
-# =====================
-# AREA
-# =====================
-TOP_LAT = 37.98
-BOTTOM_LAT = 31.57
-LEFT_LON = 23.73
-RIGHT_LON = 35.55
-
-STATIONS = ["P","H","L","S","I"]
-
-KEYWORDS = [
-    "DRIFTING","MISSING","EXERCISE","ROCKET",
-    "MISSILE","BUOY","DANGER","CABLE","PIPELINE"
-]
+CHECK_INTERVAL = 180  # 3 минуты
 
 # =====================
 # CACHE
@@ -35,7 +18,7 @@ CACHE_FILE = "cache.json"
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
-        return {"gov":[], "navtex":[]}
+        return {"gov": []}
     with open(CACHE_FILE) as f:
         return json.load(f)
 
@@ -46,26 +29,19 @@ def save_cache(data):
 cache = load_cache()
 
 # =====================
-# GOV
+# GOV RSS
 # =====================
-GOV_API = "https://www.gov.il/he/departments/dynamicCollectors/notice-to-mariners/api/getPage?skip=0&take=5"
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 
-def format_notice(item):
-    number = item.get("number")
-    title = item.get("title")
-    valid_from = item.get("publishDate")
-    valid_until = item.get("expireDate")
-    link_number = number.replace(" / ","_")
-    link = f"https://www.gov.il/en/pages/mariners_{link_number}"
+def format_rss_item(entry):
+    title = entry.get("title")
+    link = entry.get("link")
+    published = entry.get("published", "")
     return f"""
 NAVTEX Notice
 
-Number: {number}
-Subject: {title}
-
-Valid From: {valid_from}
-Valid Until: {valid_until}
+Title: {title}
+Published: {published}
 
 Open notice:
 {link}
@@ -73,140 +49,40 @@ Open notice:
 
 def check_gov():
     try:
-        r = requests.get(GOV_API, headers=HEADERS, timeout=20)
-        data = r.json()
+        feed = feedparser.parse(RSS_URL)
     except Exception as e:
-        print("GOV ERROR:", e)
+        print("GOV RSS ERROR:", e)
         return
-    for item in data.get("results", []):
-        nid = item["id"]
+    for entry in feed.entries[:5]:
+        nid = entry.get("id", entry.get("link"))
         if nid in cache["gov"]:
             continue
-        bot.send_message(CHAT_ID, format_notice(item))
+        bot.send_message(CHAT_ID, format_rss_item(entry))
         cache["gov"].append(nid)
-        save_cache(cache)
-
-# =====================
-# COORD PARSER
-# =====================
-coord_regex = re.compile(
-    r"(\d{2})[- ]?(\d{2}\.?\d*)\s*([NS])[\s,]+(\d{2,3})[- ]?(\d{2}\.?\d*)\s*([EW])"
-)
-
-def parse_coord(m):
-    lat_deg = int(m.group(1))
-    lat_min = float(m.group(2))
-    lat_dir = m.group(3)
-    lon_deg = int(m.group(4))
-    lon_min = float(m.group(5))
-    lon_dir = m.group(6)
-    lat = lat_deg + lat_min/60
-    lon = lon_deg + lon_min/60
-    if lat_dir=="S": lat = -lat
-    if lon_dir=="W": lon = -lon
-    return lat, lon
-
-def in_area(lat, lon):
-    return BOTTOM_LAT <= lat <= TOP_LAT and LEFT_LON <= lon <= RIGHT_LON
-
-# =====================
-# NAVTEX
-# =====================
-NAVTEX_URL = "https://navtex.net/navtex-archive.html"
-
-def important(msg):
-    for k in KEYWORDS:
-        if k in msg.upper():
-            return True
-    return False
-
-def check_navtex():
-    try:
-        r = requests.get(NAVTEX_URL, timeout=20)
-    except Exception as e:
-        print("NAVTEX ERROR:", e)
-        return
-    soup = BeautifulSoup(r.text, "html.parser")
-    text = soup.get_text()
-    messages = text.split("ZCZC")
-    for msg in messages:
-        msg = msg.strip()
-        if len(msg)<20: continue
-        station = msg[0]
-        if station not in STATIONS: continue
-        mid = str(hash(msg))
-        if mid in cache["navtex"]: continue
-        coord = coord_regex.search(msg)
-        if not coord: continue
-        lat, lon = parse_coord(coord)
-        if not in_area(lat, lon): continue
-        warn = "⚠ NAVTEX WARNING\n\n" if important(msg) else "NAVTEX\n\n"
-        map_link = f"https://maps.google.com/?q={lat},{lon}"
-        text_msg = f"""{warn}{msg[:900]}
-
-📍 Position
-{map_link}
-"""
-        bot.send_message(CHAT_ID, text_msg)
-        bot.send_location(CHAT_ID, lat, lon)
-        cache["navtex"].append(mid)
         save_cache(cache)
 
 # =====================
 # COMMANDS
 # =====================
-def start(update:Update, context:CallbackContext):
+def start(update: Update, context: CallbackContext):
     keyboard = [
         [InlineKeyboardButton("TEST", callback_data="test")],
-        [InlineKeyboardButton("LAST", callback_data="last")],
+        [InlineKeyboardButton("LAST GOV", callback_data="lastgov")],
     ]
-    update.message.reply_text("NAVTEX MONITOR READY", reply_markup=InlineKeyboardMarkup(keyboard))
+    update.message.reply_text("GOV.il NAVTEX MONITOR READY", reply_markup=InlineKeyboardMarkup(keyboard))
 
-def test(update:Update, context:CallbackContext):
+def test(update: Update, context: CallbackContext):
     update.message.reply_text("✅ Bot running")
 
-def lastgov(update:Update, context:CallbackContext):
+def lastgov(update: Update, context: CallbackContext):
     update.message.reply_text("Loading last GOV notices...")
     try:
-        r = requests.get(GOV_API, headers=HEADERS, timeout=20)
-        data = r.json()
+        feed = feedparser.parse(RSS_URL)
     except:
         update.message.reply_text("Error loading GOV notices")
         return
-    notices = data.get("results", [])[:5]
-    for item in notices:
-        update.message.reply_text(format_notice(item))
-
-def last(update:Update, context:CallbackContext):
-    update.message.reply_text("Searching NAVTEX...")
-    try:
-        r = requests.get(NAVTEX_URL, timeout=20)
-    except:
-        return
-    soup = BeautifulSoup(r.text,"html.parser")
-    text = soup.get_text()
-    messages = text.split("ZCZC")
-    found = 0
-    for msg in messages:
-        coord = coord_regex.search(msg)
-        if not coord: continue
-        lat, lon = parse_coord(coord)
-        if not in_area(lat, lon): continue
-        update.message.reply_text(msg[:900])
-        bot.send_location(update.effective_chat.id, lat, lon)
-        found += 1
-        if found>=5: break
-
-def debugnavtex(update:Update, context:CallbackContext):
-    update.message.reply_text("Reading NAVTEX archive...")
-    try:
-        r = requests.get(NAVTEX_URL, timeout=20)
-    except:
-        update.message.reply_text("NAVTEX load error")
-        return
-    soup = BeautifulSoup(r.text,"html.parser")
-    text = soup.get_text()
-    update.message.reply_text(text[:2000])
+    for entry in feed.entries[:5]:
+        update.message.reply_text(format_rss_item(entry))
 
 # =====================
 # MAIN
@@ -216,18 +92,17 @@ def main():
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("test", test))
-    dp.add_handler(CommandHandler("last", last))
     dp.add_handler(CommandHandler("lastgov", lastgov))
-    dp.add_handler(CommandHandler("debugnavtex", debugnavtex))
+
     updater.start_polling()
-    print("NAVTEX BOT STARTED")
+    print("GOV.il NAVTEX BOT STARTED")
+
     while True:
         try:
             check_gov()
-            check_navtex()
         except Exception as e:
             print("MAIN LOOP ERROR:", e)
         time.sleep(CHECK_INTERVAL)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
