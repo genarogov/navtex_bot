@@ -3,9 +3,7 @@ import re
 import json
 import time
 import requests
-from datetime import datetime
 from bs4 import BeautifulSoup
-
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackContext
 
@@ -66,31 +64,19 @@ cache = load_cache()
 
 GOV_API="https://www.gov.il/he/departments/dynamicCollectors/notice-to-mariners/api/getPage?skip=0&take=5"
 
-def check_gov():
+def format_notice(item):
 
-    try:
-        r=requests.get(GOV_API,timeout=20)
-        data=r.json()
-    except:
-        return
+    number=item.get("number")
+    title=item.get("title")
 
-    for item in data.get("results",[]):
+    valid_from=item.get("publishDate")
+    valid_until=item.get("expireDate")
 
-        nid=item["id"]
+    link_number=number.replace(" / ","_")
 
-        if nid in cache["gov"]:
-            continue
+    link=f"https://www.gov.il/en/pages/mariners_{link_number}"
 
-        number=item.get("number")
-        title=item.get("title")
-        valid_from=item.get("publishDate")
-        valid_until=item.get("expireDate")
-
-        link_number=number.replace(" / ","_")
-
-        link=f"https://www.gov.il/en/pages/mariners_{link_number}"
-
-        text=f"""
+    return f"""
 NAVTEX Notice
 
 Number: {number}
@@ -103,6 +89,27 @@ Open notice:
 {link}
 """
 
+def check_gov():
+
+    try:
+
+        r=requests.get(GOV_API,timeout=20)
+        data=r.json()
+
+    except Exception as e:
+
+        print("GOV ERROR:",e)
+        return
+
+    for item in data.get("results",[]):
+
+        nid=item["id"]
+
+        if nid in cache["gov"]:
+            continue
+
+        text=format_notice(item)
+
         bot.send_message(CHAT_ID,text)
 
         cache["gov"].append(nid)
@@ -113,7 +120,7 @@ Open notice:
 # COORD PARSER
 # =====================
 
-coord_regex = re.compile(
+coord_regex=re.compile(
 r"(\d{2})[- ]?(\d{2}\.?\d*)\s*([NS])[\s,]+(\d{2,3})[- ]?(\d{2}\.?\d*)\s*([EW])"
 )
 
@@ -162,8 +169,12 @@ def important(msg):
 def check_navtex():
 
     try:
+
         r=requests.get(NAVTEX_URL,timeout=20)
-    except:
+
+    except Exception as e:
+
+        print("NAVTEX ERROR:",e)
         return
 
     soup=BeautifulSoup(r.text,"html.parser")
@@ -237,13 +248,40 @@ def test(update:Update,context:CallbackContext):
 
     update.message.reply_text("✅ Bot running")
 
-def last(update:Update,context:CallbackContext):
+# -------- GOV last --------
 
-    update.message.reply_text("Searching last NAVTEX...")
+def lastgov(update:Update,context:CallbackContext):
+
+    update.message.reply_text("Loading last GOV notices...")
 
     try:
-        r=requests.get(NAVTEX_URL,timeout=20)
+
+        r=requests.get(GOV_API,timeout=20)
+        data=r.json()
+
     except:
+
+        update.message.reply_text("Error loading GOV notices")
+        return
+
+    notices=data.get("results",[])[:5]
+
+    for item in notices:
+
+        update.message.reply_text(format_notice(item))
+
+# -------- NAVTEX last --------
+
+def last(update:Update,context:CallbackContext):
+
+    update.message.reply_text("Searching NAVTEX...")
+
+    try:
+
+        r=requests.get(NAVTEX_URL,timeout=20)
+
+    except:
+
         return
 
     soup=BeautifulSoup(r.text,"html.parser")
@@ -275,6 +313,27 @@ def last(update:Update,context:CallbackContext):
         if found>=5:
             break
 
+# -------- DEBUG NAVTEX --------
+
+def debugnavtex(update:Update,context:CallbackContext):
+
+    update.message.reply_text("Reading NAVTEX archive...")
+
+    try:
+
+        r=requests.get(NAVTEX_URL,timeout=20)
+
+    except:
+
+        update.message.reply_text("NAVTEX load error")
+        return
+
+    soup=BeautifulSoup(r.text,"html.parser")
+
+    text=soup.get_text()
+
+    update.message.reply_text(text[:2000])
+
 # =====================
 # MAIN
 # =====================
@@ -288,6 +347,8 @@ def main():
     dp.add_handler(CommandHandler("start",start))
     dp.add_handler(CommandHandler("test",test))
     dp.add_handler(CommandHandler("last",last))
+    dp.add_handler(CommandHandler("lastgov",lastgov))
+    dp.add_handler(CommandHandler("debugnavtex",debugnavtex))
 
     updater.start_polling()
 
@@ -302,7 +363,7 @@ def main():
 
         except Exception as e:
 
-            print("ERROR:",e)
+            print("MAIN LOOP ERROR:",e)
 
         time.sleep(CHECK_INTERVAL)
 
