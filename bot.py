@@ -2,117 +2,199 @@ import os
 import json
 import time
 import feedparser
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+import requests
+from bs4 import BeautifulSoup
+from telegram import Bot, Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=TOKEN)
-CHECK_INTERVAL = 180  # проверка каждые 3 минуты
 
-# =====================
-# CACHE
-# =====================
+CHECK_INTERVAL = 300
+
+RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
+
+METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
+
 CACHE_FILE = "cache.json"
+
+
+AREAS = [
+    "AEGEAN",
+    "KRITIKO",
+    "CYPRUS",
+    "LEVANTINE",
+    "SOUTHEAST AEGEAN",
+    "EASTERN MEDITERRANEAN"
+]
+
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
-        return {"gov": []}
+        return {"gov": [], "metarea": ""}
     with open(CACHE_FILE) as f:
         return json.load(f)
 
+
 def save_cache(data):
-    with open(CACHE_FILE,"w") as f:
-        json.dump(data,f)
+    with open(CACHE_FILE, "w") as f:
+        json.dump(data, f)
+
 
 cache = load_cache()
 
-# =====================
-# GOV RSS
-# =====================
-RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 
-def format_rss_item(entry):
-    title = entry.get("title", "No title")
-    link = entry.get("link", "No link")
-    published = entry.get("published", "No date")
+def format_gov(entry):
+
+    title = entry.get("title", "")
+    link = entry.get("link", "")
+    published = entry.get("published", "")
+
     return f"""
-NAVTEX Notice
+⚓ GOV.il Notice
 
-Title: {title}
+{title}
+
 Published: {published}
 
-Open notice:
 {link}
 """
 
+
 def check_gov():
+
     try:
         feed = feedparser.parse(RSS_URL)
-    except Exception as e:
-        print("GOV RSS ERROR:", e)
+    except:
         return
+
     for entry in feed.entries[:5]:
-        nid = entry.get("link")  # используем ссылку как уникальный идентификатор
+
+        nid = entry.get("link")
+
         if nid in cache["gov"]:
             continue
-        bot.send_message(CHAT_ID, format_rss_item(entry))
+
+        bot.send_message(CHAT_ID, format_gov(entry))
+
         cache["gov"].append(nid)
+
         save_cache(cache)
 
-# =====================
-# COMMANDS
-# =====================
-def start(update: Update, context: CallbackContext):
-    keyboard = [
-        [InlineKeyboardButton("TEST", callback_data="test")],
-        [InlineKeyboardButton("LAST GOV", callback_data="lastgov")],
-    ]
-    update.message.reply_text("GOV.il NAVTEX MONITOR READY", reply_markup=InlineKeyboardMarkup(keyboard))
+
+def get_metarea():
+
+    try:
+        r = requests.get(METAREA_URL, timeout=20)
+    except:
+        return "Error loading METAREA"
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    text = soup.get_text()
+
+    lines = text.split("\n")
+
+    filtered = []
+
+    for line in lines:
+
+        for area in AREAS:
+
+            if area in line.upper():
+
+                filtered.append(line)
+
+    result = "\n".join(filtered)
+
+    if result == "":
+        result = text[:3000]
+
+    return result[:3500]
+
+
+def check_metarea():
+
+    text = get_metarea()
+
+    if text == cache["metarea"]:
+        return
+
+    cache["metarea"] = text
+
+    save_cache(cache)
+
+    if "GALE" in text or "STORM" in text:
+
+        bot.send_message(CHAT_ID, "⚠️ GALE WARNING METAREA III\n\n" + text)
+
+    else:
+
+        bot.send_message(CHAT_ID, "🌊 METAREA III UPDATE\n\n" + text)
+
 
 def test(update: Update, context: CallbackContext):
+
     update.message.reply_text("✅ Bot running")
 
+
 def lastgov(update: Update, context: CallbackContext):
-    update.message.reply_text("Loading last GOV notices...")
+
+    update.message.reply_text("Loading GOV notices...")
+
     try:
         feed = feedparser.parse(RSS_URL)
-    except Exception as e:
-        update.message.reply_text(f"Error loading GOV notices: {e}")
+    except:
+        update.message.reply_text("Error loading GOV")
         return
 
     if not feed.entries:
-        update.message.reply_text("No entries found in RSS.")
+        update.message.reply_text("No entries found")
         return
 
     for entry in feed.entries[:5]:
-        update.message.reply_text(format_rss_item(entry))
 
-# Для удобства можно использовать также команду /last
-def last(update: Update, context: CallbackContext):
-    lastgov(update, context)
+        update.message.reply_text(format_gov(entry))
 
-# =====================
-# MAIN
-# =====================
+
+def metarea(update: Update, context: CallbackContext):
+
+    update.message.reply_text("Loading METAREA III forecast...")
+
+    text = get_metarea()
+
+    update.message.reply_text(text)
+
+
 def main():
+
     updater = Updater(TOKEN)
+
     dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
+
     dp.add_handler(CommandHandler("test", test))
     dp.add_handler(CommandHandler("lastgov", lastgov))
-    dp.add_handler(CommandHandler("last", last))  # алиас для /lastgov
+    dp.add_handler(CommandHandler("metarea", metarea))
 
     updater.start_polling()
-    print("GOV.il NAVTEX BOT STARTED")
+
+    print("BOT STARTED")
 
     while True:
+
         try:
+
             check_gov()
+            check_metarea()
+
         except Exception as e:
-            print("MAIN LOOP ERROR:", e)
+
+            print(e)
+
         time.sleep(CHECK_INTERVAL)
+
 
 if __name__ == "__main__":
     main()
