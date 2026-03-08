@@ -27,14 +27,11 @@ def load_cache():
     with open(CACHE_FILE) as f:
         return json.load(f)
 
-
 def save_cache(data):
     with open(CACHE_FILE, "w") as f:
         json.dump(data, f)
 
-
 cache = load_cache()
-
 
 # ---------------- GOV.il ----------------
 def format_gov(entry):
@@ -50,13 +47,11 @@ Published: {published}
 {link}
 """
 
-
 def check_gov():
     try:
         feed = feedparser.parse(RSS_URL)
     except:
         return
-
     for entry in feed.entries[:5]:
         nid = entry.get("link")
         if nid in cache["gov"]:
@@ -65,46 +60,51 @@ def check_gov():
         cache["gov"].append(nid)
         save_cache(cache)
 
-
 # ---------------- METAREA ----------------
 def parse_metarea(text):
     """
-    Парсим METAREA III прогноз:
-    - разделяем по зонам TAURUS / DELTA / CRUSADE
-    - извлекаем время, ветер и состояние моря
-    - сохраняем термины как в прогнозе
+    Рабочий парсер METAREA III:
+    - Берёт TAURUS / DELTA / CRUSADE
+    - Разбирает все прогнозы с ветром и морем
+    - Формирует читаемый NAVTEX блок
     """
-    blocks = []
     text = text.replace("\n", " ")
+    result_blocks = []
 
     for area in AREAS:
-        # Захватываем блок до следующей зоны или конца
-        pattern = area + r"(.*?)(?=" + "|".join(AREAS) + "|$)"
-        match = re.search(pattern, text, re.IGNORECASE)
-        if not match:
+        # Ищем блок зоны до следующей зоны
+        pattern_area = re.compile(f"{area}(.*?)(?={'|'.join(AREAS)}|$)", re.IGNORECASE)
+        match_area = pattern_area.search(text)
+        if not match_area:
             continue
-        block_text = match.group(0).strip()
+        block_text = match_area.group(1).strip()
 
-        # Время действия: ищем FORECAST UP TO, VALID FROM / UNTIL
-        time_match = re.search(r"(FORECAST UP TO|VALID FROM|VALID UNTIL)\s*([0-9]{1,2}\s+[A-Z]+\s+[0-9]{2,4}\s*[0-9]{0,2}\s*UTC)?", block_text, re.IGNORECASE)
-        time_str = time_match.group(2).strip() if time_match and time_match.group(2) else "N/A"
+        # Найдём все прогнозы внутри зоны
+        forecast_pattern = re.compile(
+            r"(?P<wind>[NORTH|SOUTH|EAST|WEST|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|VARIABLE|\s]+"
+            r"\d+(?:\s*OR\s*\d+)?(?:\s*UP TO\s*\d+)?)"
+            r".*?(?P<sea>SMOOTH|SLIGHT|MODERATE|ROUGH|CHANCE OF THUNDERSTORM)",
+            re.IGNORECASE
+        )
 
-        # Ветер: направление + сила + диапазон
-        wind_match = re.findall(r"((?:NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|EASTNORTHEAST|EASTSOUTHEAST|WESTNORTHWEST|WESTSOUTHWEST|NORTHNORTHEAST|NORTHEAST|NORTHWEST|SOUTHWEST|SOUTHEAST)+\s*\d+(?:\s*OR\s*\d+)?(?:\s*UP TO\s*\d+)?)", block_text, re.IGNORECASE)
-        wind_str = ", ".join(wind_match) if wind_match else "N/A"
+        forecasts = forecast_pattern.findall(block_text)
+        if not forecasts:
+            result_blocks.append(f"📍 {area}\nNo detailed forecast")
+            continue
 
-        # Состояние моря
-        sea_match = re.findall(r"(SMOOTH|SLIGHT|MODERATE|ROUGH|CHANCE OF THUNDERSTORM)", block_text, re.IGNORECASE)
-        sea_str = ", ".join(sea_match) if sea_match else "N/A"
+        # Формируем читаемые блоки
+        area_block = [f"📍 {area}"]
+        for wind, sea in forecasts:
+            wind = re.sub(r"\s+", " ", wind).strip()
+            sea = sea.strip()
+            area_block.append(f"🌬 Wind: {wind}\n🌊 Sea: {sea}")
 
-        block_formatted = f"📍 {area}\n🕒 Valid: {time_str}\n🌬 Wind: {wind_str}\n🌊 Sea: {sea_str}"
-        blocks.append(block_formatted)
+        result_blocks.append("\n".join(area_block))
 
-    if not blocks:
+    if not result_blocks:
         return "No forecast available for TAURUS / DELTA / CRUSADE"
 
-    return "\n\n".join(blocks)
-
+    return "\n\n".join(result_blocks)
 
 def get_metarea():
     try:
@@ -116,25 +116,20 @@ def get_metarea():
     soup = BeautifulSoup(r.text, "html.parser")
     text = soup.get_text()
     parsed = parse_metarea(text)
-    return parsed[:4000]  # Telegram лимит
-
+    return parsed[:4000]  # Telegram limit
 
 def check_metarea():
     text = get_metarea()
     if text == cache["metarea"]:
         return
-
     cache["metarea"] = text
     save_cache(cache)
-
     header = "⚠️ GALE WARNING\n\n" if "GALE" in text or "STORM" in text else "🌊 METAREA III FORECAST\n\n"
     bot.send_message(CHAT_ID, header + text)
-
 
 # ---------------- COMMANDS ----------------
 def test(update: Update, context: CallbackContext):
     update.message.reply_text("✅ Bot running")
-
 
 def lastgov(update: Update, context: CallbackContext):
     update.message.reply_text("Loading GOV notices...")
@@ -143,20 +138,16 @@ def lastgov(update: Update, context: CallbackContext):
     except:
         update.message.reply_text("Error loading GOV")
         return
-
     if not feed.entries:
         update.message.reply_text("No entries found")
         return
-
     for entry in feed.entries[:5]:
         update.message.reply_text(format_gov(entry))
-
 
 def metarea(update: Update, context: CallbackContext):
     update.message.reply_text("Loading forecast...")
     text = get_metarea()
     update.message.reply_text(text)
-
 
 # ---------------- MAIN ----------------
 def main():
@@ -177,7 +168,6 @@ def main():
         except Exception as e:
             print("Error:", e)
         time.sleep(CHECK_INTERVAL)
-
 
 if __name__ == "__main__":
     main()
