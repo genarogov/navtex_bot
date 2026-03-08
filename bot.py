@@ -62,14 +62,7 @@ def check_gov():
 
 # ---------------- METAREA ----------------
 def parse_metarea(text):
-    """
-    Парсер METAREA III:
-    - Берёт TAURUS / DELTA / CRUSADE
-    - Каждое предложение отдельным блоком
-    - Остановка на KASTELLORIZO SEA
-    - Добавляет Issued один раз перед всеми прогнозами
-    """
-    # Остановка на KASTELLORIZO SEA
+    # Останавливаемся на KASTELLORIZO SEA
     if "KASTELLORIZO SEA" in text:
         text = text.split("KASTELLORIZO SEA")[0]
 
@@ -77,30 +70,23 @@ def parse_metarea(text):
     issued_match = re.search(r"(\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC)", text)
     issued_time = issued_match.group(1) if issued_match else "N/A"
 
-    # Основной блок
     result_blocks = [f"🕒 Issued: {issued_time}"]
 
     for area in AREAS:
-        # Ищем блок зоны
+        # Блок зоны
         pattern_area = re.compile(f"{area}(.*?)(?={'|'.join(AREAS)}|$)", re.IGNORECASE)
         match_area = pattern_area.search(text)
         if not match_area:
             continue
         block_text = match_area.group(1).strip()
 
-        # Разделяем на предложения
-        sentences = [s.strip() for s in re.split(r"\. ", block_text) if s.strip()]
-
+        # Предложения, содержащие направление ветра
+        sentences = [s.strip() for s in re.split(r"\. ", block_text) if re.search(r"\b(NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST)\b", s, re.IGNORECASE)]
+        
         for sentence in sentences:
-            # Игнорируем мусор: берём только предложения с реальным ветром
-            if not re.search(r"\b(NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST)\b", sentence, re.IGNORECASE):
-                continue
-
-            # Ветер
-            wind_match = re.findall(r"((?:NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|[A-Z]+)+\s*\d+(?:\s*OR\s*\d+)?(?:\s*UP TO\s*\d+)?)", sentence, re.IGNORECASE)
+            wind_match = re.findall(r"((?:NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST)[^\.,]*)", sentence, re.IGNORECASE)
             wind_str = ", ".join([w.strip() for w in wind_match]) if wind_match else "N/A"
-
-            # Состояние моря
+            
             sea_match = re.findall(r"(SMOOTH|SLIGHT|MODERATE|ROUGH|CHANCE OF THUNDERSTORM)", sentence, re.IGNORECASE)
             sea_str = ", ".join([s.strip() for s in sea_match]) if sea_match else "N/A"
 
@@ -121,7 +107,7 @@ def get_metarea():
     soup = BeautifulSoup(r.text, "html.parser")
     text = soup.get_text()
     parsed = parse_metarea(text)
-    return parsed[:4000]  # Telegram лимит
+    return parsed[:4000]
 
 def check_metarea():
     text = get_metarea()
