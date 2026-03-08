@@ -22,12 +22,9 @@ CACHE_FILE = "cache.json"
 
 
 AREAS = [
-    "AEGEAN",
-    "KRITIKO",
-    "CYPRUS",
-    "LEVANTINE",
-    "SOUTHEAST AEGEAN",
-    "EASTERN MEDITERRANEAN"
+    "CRUSADE",
+    "DELTA",
+    "TAURUS"
 ]
 
 
@@ -99,18 +96,21 @@ def get_metarea():
 
     filtered = []
 
-    for line in lines:
+    for i, line in enumerate(lines):
 
         for area in AREAS:
 
             if area in line.upper():
 
-                filtered.append(line)
+                block = "\n".join(lines[i:i+8])
 
-    result = "\n".join(filtered)
+                filtered.append(block)
 
-    if result == "":
-        result = text[:3000]
+    if not filtered:
+
+        return "No forecast for CRUSADE / DELTA / TAURUS"
+
+    result = "\n\n".join(filtered)
 
     return result[:3500]
 
@@ -128,11 +128,11 @@ def check_metarea():
 
     if "GALE" in text or "STORM" in text:
 
-        bot.send_message(CHAT_ID, "⚠️ GALE WARNING METAREA III\n\n" + text)
+        bot.send_message(CHAT_ID, "⚠️ GALE WARNING\n\n" + text)
 
     else:
 
-        bot.send_message(CHAT_ID, "🌊 METAREA III UPDATE\n\n" + text)
+        bot.send_message(CHAT_ID, "🌊 METAREA III FORECAST\n\n" + text)
 
 
 def test(update: Update, context: CallbackContext):
@@ -161,7 +161,7 @@ def lastgov(update: Update, context: CallbackContext):
 
 def metarea(update: Update, context: CallbackContext):
 
-    update.message.reply_text("Loading METAREA III forecast...")
+    update.message.reply_text("Loading forecast...")
 
     text = get_metarea()
 
