@@ -71,33 +71,32 @@ def parse_metarea(text):
     """
     Парсим METAREA III прогноз:
     - разделяем по зонам TAURUS / DELTA / CRUSADE
-    - извлекаем время, ветер, состояние моря
-    - возвращаем читаемые NAVTEX-блоки
+    - извлекаем время, ветер и состояние моря
+    - сохраняем термины как в прогнозе
     """
     blocks = []
     text = text.replace("\n", " ")
 
     for area in AREAS:
-        # Ищем блок по зоне до следующей зоны или конца
+        # Захватываем блок до следующей зоны или конца
         pattern = area + r"(.*?)(?=" + "|".join(AREAS) + "|$)"
         match = re.search(pattern, text, re.IGNORECASE)
         if not match:
             continue
         block_text = match.group(0).strip()
 
-        # Извлекаем время (пример: "FORECAST UP TO 09 MARCH 04 UTC")
-        time_match = re.search(r"(FORECAST UP TO|VALID FROM|VALID UNTIL)\s*(\d{1,2}\s+[A-Z]+\s+\d{2,4}\s*\d{0,2}\s*UTC)?", block_text, re.IGNORECASE)
-        time_str = time_match.group(2).strip() if time_match else "N/A"
+        # Время действия: ищем FORECAST UP TO, VALID FROM / UNTIL
+        time_match = re.search(r"(FORECAST UP TO|VALID FROM|VALID UNTIL)\s*([0-9]{1,2}\s+[A-Z]+\s+[0-9]{2,4}\s*[0-9]{0,2}\s*UTC)?", block_text, re.IGNORECASE)
+        time_str = time_match.group(2).strip() if time_match and time_match.group(2) else "N/A"
 
-        # Извлекаем ветер (пример: "NORTH NORTHEAST 3 UP TO 5")
-        wind_match = re.search(r"([NSEW]+(?:\s+[NSEW]+)?)\s*(\d{1,2}(?:\s*OR\s*\d{1,2})?)", block_text, re.IGNORECASE)
-        wind_str = wind_match.group(0).strip() if wind_match else "N/A"
+        # Ветер: направление + сила + диапазон
+        wind_match = re.findall(r"((?:NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|EASTNORTHEAST|EASTSOUTHEAST|WESTNORTHWEST|WESTSOUTHWEST|NORTHNORTHEAST|NORTHEAST|NORTHWEST|SOUTHWEST|SOUTHEAST)+\s*\d+(?:\s*OR\s*\d+)?(?:\s*UP TO\s*\d+)?)", block_text, re.IGNORECASE)
+        wind_str = ", ".join(wind_match) if wind_match else "N/A"
 
-        # Извлекаем море (пример: "VARIABLE 3 OR 4. SMOOTH OR SLIGHT")
-        sea_match = re.search(r"(SMOOTH|SLIGHT|MODERATE|ROUGH|CHANCE OF THUNDERSTORM)", block_text, re.IGNORECASE)
-        sea_str = sea_match.group(0).strip() if sea_match else "N/A"
+        # Состояние моря
+        sea_match = re.findall(r"(SMOOTH|SLIGHT|MODERATE|ROUGH|CHANCE OF THUNDERSTORM)", block_text, re.IGNORECASE)
+        sea_str = ", ".join(sea_match) if sea_match else "N/A"
 
-        # Формируем читаемый блок
         block_formatted = f"📍 {area}\n🕒 Valid: {time_str}\n🌬 Wind: {wind_str}\n🌊 Sea: {sea_str}"
         blocks.append(block_formatted)
 
@@ -117,7 +116,7 @@ def get_metarea():
     soup = BeautifulSoup(r.text, "html.parser")
     text = soup.get_text()
     parsed = parse_metarea(text)
-    return parsed[:4000]  # Telegram limit
+    return parsed[:4000]  # Telegram лимит
 
 
 def check_metarea():
