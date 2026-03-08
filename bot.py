@@ -22,6 +22,17 @@ CACHE_FILE = "cache.json"
 
 AREAS = ["TAURUS", "DELTA", "CRUSADE"]
 
+DIRECTIONS = {
+    "NORTH": "N",
+    "NORTHEAST": "NE",
+    "NORTHWEST": "NW",
+    "SOUTH": "S",
+    "SOUTHEAST": "SE",
+    "SOUTHWEST": "SW",
+    "EAST": "E",
+    "WEST": "W",
+}
+
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
@@ -44,12 +55,11 @@ def format_gov(entry):
     link = entry.get("link", "")
     published = entry.get("published", "")
 
-    return f"""
-⚓ GOV.il Notice
+    return f"""⚓ GOV.il Notice
 
 {title}
 
-Published: {published}
+📅 {published}
 
 {link}
 """
@@ -76,33 +86,72 @@ def check_gov():
         save_cache(cache)
 
 
-def clean_metarea_text(text):
+def shorten_direction(text):
 
-    text = text.replace("\n", " ")
+    for full, short in DIRECTIONS.items():
+        text = text.replace(full, short)
 
-    # добавляем переносы перед районами
+    text = text.replace("NORTH NORTHEAST", "NNE")
+    text = text.replace("NORTH NORTHWEST", "NNW")
+    text = text.replace("SOUTH SOUTHEAST", "SSE")
+    text = text.replace("SOUTH SOUTHWEST", "SSW")
+
+    return text
+
+
+def clean_line(line):
+
+    line = line.upper()
+    line = shorten_direction(line)
+
+    line = re.sub(r"\s+", " ", line)
+
+    return line.strip()
+
+
+def parse_metarea(text):
+
+    lines = [clean_line(l) for l in text.split("\n") if l.strip()]
+
+    results = {}
+
+    current_area = None
+
+    for line in lines:
+
+        if line in AREAS:
+            current_area = line
+            results[current_area] = []
+            continue
+
+        if current_area:
+            results[current_area].append(line)
+
+            if len(results[current_area]) >= 2:
+                current_area = None
+
+    message = "🌊 METAREA III\n"
+
     for area in AREAS:
-        text = text.replace(area, f"\n{area}")
 
-    blocks = []
+        if area not in results:
+            continue
 
-    for area in AREAS:
+        message += f"\n📍 {area}\n"
 
-        pattern = area + r"(.*?)(?=\n[A-Z ]{3,}|$)"
+        forecast = " ".join(results[area])
 
-        match = re.search(pattern, text)
+        wind_match = re.search(r"(N|S|E|W|NE|NW|SE|SW|NNE|NNW|SSE|SSW)\s*\d", forecast)
 
-        if match:
-            block = match.group(0)
+        if wind_match:
+            message += f"🌬 Wind: {wind_match.group(0)}\n"
 
-            block = block.replace("  ", " ")
+        message += f"{forecast}\n"
 
-            blocks.append(block.strip())
-
-    if not blocks:
+    if len(message) < 20:
         return "No forecast for TAURUS / DELTA / CRUSADE"
 
-    return "\n\n".join(blocks)
+    return message
 
 
 def get_metarea():
@@ -116,9 +165,7 @@ def get_metarea():
 
     text = soup.get_text()
 
-    cleaned = clean_metarea_text(text)
-
-    return cleaned[:3500]
+    return parse_metarea(text)
 
 
 def check_metarea():
@@ -132,13 +179,7 @@ def check_metarea():
 
     save_cache(cache)
 
-    if "GALE" in text or "STORM" in text:
-
-        bot.send_message(CHAT_ID, "⚠️ GALE WARNING\n\n" + text)
-
-    else:
-
-        bot.send_message(CHAT_ID, "🌊 METAREA III FORECAST\n\n" + text)
+    bot.send_message(CHAT_ID, text)
 
 
 def test(update: Update, context: CallbackContext):
@@ -167,7 +208,7 @@ def lastgov(update: Update, context: CallbackContext):
 
 def metarea(update: Update, context: CallbackContext):
 
-    update.message.reply_text("Loading forecast...")
+    update.message.reply_text("Loading METAREA forecast...")
 
     text = get_metarea()
 
