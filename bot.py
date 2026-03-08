@@ -3,6 +3,7 @@ import json
 import time
 import feedparser
 import requests
+import re
 from bs4 import BeautifulSoup
 from telegram import Bot, Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
@@ -15,17 +16,11 @@ bot = Bot(token=TOKEN)
 CHECK_INTERVAL = 300
 
 RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
-
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
 
 CACHE_FILE = "cache.json"
 
-
-AREAS = [
-    "CRUSADE",
-    "DELTA",
-    "TAURUS"
-]
+AREAS = ["TAURUS", "DELTA", "CRUSADE"]
 
 
 def load_cache():
@@ -81,6 +76,35 @@ def check_gov():
         save_cache(cache)
 
 
+def clean_metarea_text(text):
+
+    text = text.replace("\n", " ")
+
+    # добавляем переносы перед районами
+    for area in AREAS:
+        text = text.replace(area, f"\n{area}")
+
+    blocks = []
+
+    for area in AREAS:
+
+        pattern = area + r"(.*?)(?=\n[A-Z ]{3,}|$)"
+
+        match = re.search(pattern, text)
+
+        if match:
+            block = match.group(0)
+
+            block = block.replace("  ", " ")
+
+            blocks.append(block.strip())
+
+    if not blocks:
+        return "No forecast for TAURUS / DELTA / CRUSADE"
+
+    return "\n\n".join(blocks)
+
+
 def get_metarea():
 
     try:
@@ -92,27 +116,9 @@ def get_metarea():
 
     text = soup.get_text()
 
-    lines = text.split("\n")
+    cleaned = clean_metarea_text(text)
 
-    filtered = []
-
-    for i, line in enumerate(lines):
-
-        for area in AREAS:
-
-            if area in line.upper():
-
-                block = "\n".join(lines[i:i+8])
-
-                filtered.append(block)
-
-    if not filtered:
-
-        return "No forecast for CRUSADE / DELTA / TAURUS"
-
-    result = "\n\n".join(filtered)
-
-    return result[:3500]
+    return cleaned[:3500]
 
 
 def check_metarea():
