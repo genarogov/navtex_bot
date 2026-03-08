@@ -22,17 +22,18 @@ CACHE_FILE = "cache.json"
 
 AREAS = ["TAURUS", "DELTA", "CRUSADE"]
 
-DIRECTIONS = {
-    "NORTH": "N",
-    "NORTHEAST": "NE",
-    "NORTHWEST": "NW",
-    "SOUTH": "S",
-    "SOUTHEAST": "SE",
-    "SOUTHWEST": "SW",
-    "EAST": "E",
-    "WEST": "W",
-}
-
+# сокращение направлений ветра
+def shorten_direction(text):
+    text = text.upper()
+    text = text.replace("NORTH NORTHEAST", "NNE")
+    text = text.replace("NORTH NORTHWEST", "NNW")
+    text = text.replace("SOUTH SOUTHEAST", "SSE")
+    text = text.replace("SOUTH SOUTHWEST", "SSW")
+    text = text.replace("NORTH", "N")
+    text = text.replace("SOUTH", "S")
+    text = text.replace("EAST", "E")
+    text = text.replace("WEST", "W")
+    return text
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
@@ -40,21 +41,16 @@ def load_cache():
     with open(CACHE_FILE) as f:
         return json.load(f)
 
-
 def save_cache(data):
     with open(CACHE_FILE, "w") as f:
         json.dump(data, f)
 
-
 cache = load_cache()
 
-
 def format_gov(entry):
-
     title = entry.get("title", "")
     link = entry.get("link", "")
     published = entry.get("published", "")
-
     return f"""⚓ GOV.il Notice
 
 {title}
@@ -64,184 +60,92 @@ def format_gov(entry):
 {link}
 """
 
-
 def check_gov():
-
     try:
         feed = feedparser.parse(RSS_URL)
     except:
         return
-
     for entry in feed.entries[:5]:
-
         nid = entry.get("link")
-
         if nid in cache["gov"]:
             continue
-
         bot.send_message(CHAT_ID, format_gov(entry))
-
         cache["gov"].append(nid)
-
         save_cache(cache)
 
-
-def shorten_direction(text):
-
-    for full, short in DIRECTIONS.items():
-        text = text.replace(full, short)
-
-    text = text.replace("NORTH NORTHEAST", "NNE")
-    text = text.replace("NORTH NORTHWEST", "NNW")
-    text = text.replace("SOUTH SOUTHEAST", "SSE")
-    text = text.replace("SOUTH SOUTHWEST", "SSW")
-
-    return text
-
-
-def clean_line(line):
-
-    line = line.upper()
-    line = shorten_direction(line)
-
-    line = re.sub(r"\s+", " ", line)
-
-    return line.strip()
-
-
+# правильный парсер METAREA
 def parse_metarea(text):
-
-    lines = [clean_line(l) for l in text.split("\n") if l.strip()]
-
-    results = {}
-
-    current_area = None
-
-    for line in lines:
-
-        if line in AREAS:
-            current_area = line
-            results[current_area] = []
-            continue
-
-        if current_area:
-            results[current_area].append(line)
-
-            if len(results[current_area]) >= 2:
-                current_area = None
-
-    message = "🌊 METAREA III\n"
-
+    text = text.upper()
+    message = "🌊 METAREA III FORECAST\n"
     for area in AREAS:
-
-        if area not in results:
+        # regex: название района + текст до следующего района или конца
+        pattern = rf"{area}\.(.*?)(?=TAURUS\.|DELTA\.|CRUSADE\.|$)"
+        match = re.search(pattern, text, re.S)
+        if not match:
             continue
-
+        block = match.group(1)
+        block = re.sub(r"\s+", " ", block).strip()
+        block = shorten_direction(block)
         message += f"\n📍 {area}\n"
-
-        forecast = " ".join(results[area])
-
-        wind_match = re.search(r"(N|S|E|W|NE|NW|SE|SW|NNE|NNW|SSE|SSW)\s*\d", forecast)
-
-        if wind_match:
-            message += f"🌬 Wind: {wind_match.group(0)}\n"
-
-        message += f"{forecast}\n"
-
-    if len(message) < 20:
-        return "No forecast for TAURUS / DELTA / CRUSADE"
-
+        message += f"{block[:400]}...\n"  # обрезаем длинные строки для удобства
+    if message == "🌊 METAREA III FORECAST\n":
+        return "No forecast found"
     return message
 
-
 def get_metarea():
-
     try:
         r = requests.get(METAREA_URL, timeout=20)
     except:
         return "Error loading METAREA"
-
     soup = BeautifulSoup(r.text, "html.parser")
-
     text = soup.get_text()
-
     return parse_metarea(text)
 
-
 def check_metarea():
-
     text = get_metarea()
-
     if text == cache["metarea"]:
         return
-
     cache["metarea"] = text
-
     save_cache(cache)
-
     bot.send_message(CHAT_ID, text)
 
-
+# команды телеграм
 def test(update: Update, context: CallbackContext):
-
     update.message.reply_text("✅ Bot running")
 
-
 def lastgov(update: Update, context: CallbackContext):
-
     update.message.reply_text("Loading GOV notices...")
-
     try:
         feed = feedparser.parse(RSS_URL)
     except:
         update.message.reply_text("Error loading GOV")
         return
-
     if not feed.entries:
         update.message.reply_text("No entries found")
         return
-
     for entry in feed.entries[:5]:
-
         update.message.reply_text(format_gov(entry))
 
-
 def metarea(update: Update, context: CallbackContext):
-
     update.message.reply_text("Loading METAREA forecast...")
-
     text = get_metarea()
-
     update.message.reply_text(text)
 
-
 def main():
-
     updater = Updater(TOKEN)
-
     dp = updater.dispatcher
-
     dp.add_handler(CommandHandler("test", test))
     dp.add_handler(CommandHandler("lastgov", lastgov))
     dp.add_handler(CommandHandler("metarea", metarea))
-
     updater.start_polling()
-
     print("BOT STARTED")
-
     while True:
-
         try:
-
             check_gov()
             check_metarea()
-
         except Exception as e:
-
             print(e)
-
         time.sleep(CHECK_INTERVAL)
-
 
 if __name__ == "__main__":
     main()
