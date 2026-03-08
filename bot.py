@@ -62,6 +62,11 @@ def get_metarea():
         next_starts = [s for s in next_starts if s != -1]
         zone_end = min(next_starts) if next_starts else len(forecast_text)
         block_text = forecast_text[zone_start:zone_end].strip()
+
+        # Убираем название зоны, если оно повторяется в начале блока
+        if block_text.startswith(zone):
+            block_text = block_text[len(zone):].lstrip()
+
         blocks.append(f"📍 {zone}\n{block_text}")
 
     full_text = f"🕒 Issued: {issued_time}\n\n" + "\n\n".join(blocks)
