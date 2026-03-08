@@ -63,13 +63,22 @@ def check_gov():
 # ---------------- METAREA ----------------
 def parse_metarea(text):
     """
-    Рабочий парсер METAREA III:
+    Парсер METAREA III:
     - Берёт TAURUS / DELTA / CRUSADE
-    - Каждый прогноз отдельным блоком
-    - Ветер, море, время
+    - Каждое предложение отдельным блоком
+    - Остановка на KASTELLORIZO SEA
+    - Добавляет Issued один раз перед всеми прогнозами
     """
-    text = text.replace("\n", " ")
-    result_blocks = []
+    # Остановка на KASTELLORIZO SEA
+    if "KASTELLORIZO SEA" in text:
+        text = text.split("KASTELLORIZO SEA")[0]
+
+    # Время выпуска
+    issued_match = re.search(r"(\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC)", text)
+    issued_time = issued_match.group(1) if issued_match else "N/A"
+
+    # Основной блок
+    result_blocks = [f"🕒 Issued: {issued_time}"]
 
     for area in AREAS:
         # Ищем блок зоны
@@ -79,13 +88,13 @@ def parse_metarea(text):
             continue
         block_text = match_area.group(1).strip()
 
-        # Разделяем на предложения по точке, каждая точка — отдельный прогноз
+        # Разделяем на предложения
         sentences = [s.strip() for s in re.split(r"\. ", block_text) if s.strip()]
 
         for sentence in sentences:
-            # Время действия
-            time_match = re.search(r"(FORECAST UP TO|VALID FROM|VALID UNTIL)\s*([0-9]{1,2}\s+[A-Z]+\s+[0-9]{2,4}\s*[0-9]{0,2}\s*UTC)?", sentence, re.IGNORECASE)
-            time_str = time_match.group(2).strip() if time_match and time_match.group(2) else "N/A"
+            # Игнорируем мусор: берём только предложения с реальным ветром
+            if not re.search(r"\b(NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST)\b", sentence, re.IGNORECASE):
+                continue
 
             # Ветер
             wind_match = re.findall(r"((?:NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|[A-Z]+)+\s*\d+(?:\s*OR\s*\d+)?(?:\s*UP TO\s*\d+)?)", sentence, re.IGNORECASE)
@@ -95,10 +104,9 @@ def parse_metarea(text):
             sea_match = re.findall(r"(SMOOTH|SLIGHT|MODERATE|ROUGH|CHANCE OF THUNDERSTORM)", sentence, re.IGNORECASE)
             sea_str = ", ".join([s.strip() for s in sea_match]) if sea_match else "N/A"
 
-            # Формируем блок
-            result_blocks.append(f"📍 {area}\n🕒 Valid: {time_str}\n🌬 Wind: {wind_str}\n🌊 Sea: {sea_str}")
+            result_blocks.append(f"📍 {area}\n🌬 Wind: {wind_str}\n🌊 Sea: {sea_str}")
 
-    if not result_blocks:
+    if len(result_blocks) == 1:
         return "No forecast available for TAURUS / DELTA / CRUSADE"
 
     return "\n\n".join(result_blocks)
