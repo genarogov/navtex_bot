@@ -22,7 +22,7 @@ CACHE_FILE = "cache.json"
 
 AREAS = ["TAURUS", "DELTA", "CRUSADE"]
 
-# сокращение направлений ветра
+# Сокращения направления ветра
 def shorten_direction(text):
     text = text.upper()
     text = text.replace("NORTH NORTHEAST", "NNE")
@@ -73,23 +73,27 @@ def check_gov():
         cache["gov"].append(nid)
         save_cache(cache)
 
-# правильный парсер METAREA
+# Новый стабильный парсер METAREA
 def parse_metarea(text):
     text = text.upper()
     message = "🌊 METAREA III FORECAST\n"
+
     for area in AREAS:
-        # regex: название района + текст до следующего района или конца
-        pattern = rf"{area}\.(.*?)(?=TAURUS\.|DELTA\.|CRUSADE\.|$)"
+        # ищем название района без точки, текст до следующего района
+        pattern = rf"{area}(.*?)(?=TAURUS|DELTA|CRUSADE|$)"
         match = re.search(pattern, text, re.S)
         if not match:
             continue
         block = match.group(1)
+        # убираем лишние пробелы и переносы
         block = re.sub(r"\s+", " ", block).strip()
         block = shorten_direction(block)
         message += f"\n📍 {area}\n"
         message += f"{block[:400]}...\n"  # обрезаем длинные строки для удобства
+
     if message == "🌊 METAREA III FORECAST\n":
         return "No forecast found"
+
     return message
 
 def get_metarea():
@@ -109,7 +113,7 @@ def check_metarea():
     save_cache(cache)
     bot.send_message(CHAT_ID, text)
 
-# команды телеграм
+# Команды Telegram
 def test(update: Update, context: CallbackContext):
     update.message.reply_text("✅ Bot running")
 
