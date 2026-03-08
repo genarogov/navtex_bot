@@ -22,7 +22,7 @@ CACHE_FILE = "cache.json"
 
 AREAS = ["TAURUS", "DELTA", "CRUSADE"]
 
-# Сокращения направления ветра
+# Сокращение направления ветра
 def shorten_direction(text):
     text = text.upper()
     text = text.replace("NORTH NORTHEAST", "NNE")
@@ -73,23 +73,25 @@ def check_gov():
         cache["gov"].append(nid)
         save_cache(cache)
 
-# Новый стабильный парсер METAREA
+# Исправленный стабильный парсер METAREA
 def parse_metarea(text):
     text = text.upper()
+    # вставляем перенос строки перед каждой зоной, чтобы разделить слипшиеся названия
+    for area in AREAS:
+        text = re.sub(area, f"\n{area}", text)
+
     message = "🌊 METAREA III FORECAST\n"
 
     for area in AREAS:
-        # ищем название района без точки, текст до следующего района
-        pattern = rf"{area}(.*?)(?=TAURUS|DELTA|CRUSADE|$)"
+        pattern = rf"{area}\n(.*?)(?=\nTAURUS|\nDELTA|\nCRUSADE|$)"
         match = re.search(pattern, text, re.S)
         if not match:
             continue
         block = match.group(1)
-        # убираем лишние пробелы и переносы
         block = re.sub(r"\s+", " ", block).strip()
         block = shorten_direction(block)
         message += f"\n📍 {area}\n"
-        message += f"{block[:400]}...\n"  # обрезаем длинные строки для удобства
+        message += f"{block[:400]}...\n"  # обрезаем слишком длинные строки
 
     if message == "🌊 METAREA III FORECAST\n":
         return "No forecast found"
