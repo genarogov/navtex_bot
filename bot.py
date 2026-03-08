@@ -2,6 +2,7 @@ import os
 import time
 import json
 import requests
+import feedparser
 from bs4 import BeautifulSoup
 from telegram import Bot, Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
@@ -11,16 +12,17 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=TOKEN)
-CHECK_INTERVAL = 300
-METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
+CHECK_INTERVAL = 300  # 5 минут
 CACHE_FILE = "cache.json"
 
+RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
+METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
 ZONES = ["TAURUS", "DELTA", "CRUSADE"]
 
 # ---------------- CACHE ----------------
 def load_cache():
     if not os.path.exists(CACHE_FILE):
-        return {"metarea": ""}
+        return {"gov": [], "metarea": ""}
     with open(CACHE_FILE) as f:
         return json.load(f)
 
@@ -29,6 +31,39 @@ def save_cache(data):
         json.dump(data, f)
 
 cache = load_cache()
+
+# ---------------- GOV.il ----------------
+def format_gov(entry):
+    title = entry.get("title", "")
+    link = entry.get("link", "")
+    published = entry.get("published", "")
+    return f"⚓ GOV.il Notice\n\n{title}\nPublished: {published}\n{link}"
+
+def check_gov():
+    try:
+        feed = feedparser.parse(RSS_URL)
+    except:
+        return
+    for entry in feed.entries[:5]:
+        nid = entry.get("link")
+        if nid in cache["gov"]:
+            continue
+        bot.send_message(CHAT_ID, format_gov(entry))
+        cache["gov"].append(nid)
+        save_cache(cache)
+
+def lastgov(update: Update, context: CallbackContext):
+    update.message.reply_text("Loading GOV notices...")
+    try:
+        feed = feedparser.parse(RSS_URL)
+    except:
+        update.message.reply_text("Error loading GOV")
+        return
+    if not feed.entries:
+        update.message.reply_text("No entries found")
+        return
+    for entry in feed.entries[:5]:
+        update.message.reply_text(format_gov(entry))
 
 # ---------------- METAREA ----------------
 def get_metarea():
@@ -62,11 +97,8 @@ def get_metarea():
         next_starts = [s for s in next_starts if s != -1]
         zone_end = min(next_starts) if next_starts else len(forecast_text)
         block_text = forecast_text[zone_start:zone_end].strip()
-
-        # Убираем название зоны, если оно повторяется в начале блока
         if block_text.startswith(zone):
             block_text = block_text[len(zone):].lstrip()
-
         blocks.append(f"📍 {zone}\n{block_text}")
 
     full_text = f"🕒 Issued: {issued_time}\n\n" + "\n\n".join(blocks)
@@ -80,12 +112,12 @@ def check_metarea():
     save_cache(cache)
     bot.send_message(CHAT_ID, "🌊 METAREA III FORECAST\n\n" + text)
 
-# ---------------- COMMANDS ----------------
 def metarea(update: Update, context: CallbackContext):
     update.message.reply_text("Loading forecast...")
     text = get_metarea()
     update.message.reply_text(text)
 
+# ---------------- TEST ----------------
 def test(update: Update, context: CallbackContext):
     update.message.reply_text("✅ Bot running")
 
@@ -95,6 +127,7 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("test", test))
+    dp.add_handler(CommandHandler("lastgov", lastgov))
     dp.add_handler(CommandHandler("metarea", metarea))
 
     updater.start_polling()
@@ -102,6 +135,7 @@ def main():
 
     while True:
         try:
+            check_gov()
             check_metarea()
         except Exception as e:
             print("Error:", e)
