@@ -65,41 +65,38 @@ def parse_metarea(text):
     """
     Рабочий парсер METAREA III:
     - Берёт TAURUS / DELTA / CRUSADE
-    - Разбирает все прогнозы с ветром и морем
-    - Формирует читаемый NAVTEX блок
+    - Каждый прогноз отдельным блоком
+    - Ветер, море, время
     """
     text = text.replace("\n", " ")
     result_blocks = []
 
     for area in AREAS:
-        # Ищем блок зоны до следующей зоны
+        # Ищем блок зоны
         pattern_area = re.compile(f"{area}(.*?)(?={'|'.join(AREAS)}|$)", re.IGNORECASE)
         match_area = pattern_area.search(text)
         if not match_area:
             continue
         block_text = match_area.group(1).strip()
 
-        # Найдём все прогнозы внутри зоны
-        forecast_pattern = re.compile(
-            r"(?P<wind>[NORTH|SOUTH|EAST|WEST|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|VARIABLE|\s]+"
-            r"\d+(?:\s*OR\s*\d+)?(?:\s*UP TO\s*\d+)?)"
-            r".*?(?P<sea>SMOOTH|SLIGHT|MODERATE|ROUGH|CHANCE OF THUNDERSTORM)",
-            re.IGNORECASE
-        )
+        # Разделяем на предложения по точке, каждая точка — отдельный прогноз
+        sentences = [s.strip() for s in re.split(r"\. ", block_text) if s.strip()]
 
-        forecasts = forecast_pattern.findall(block_text)
-        if not forecasts:
-            result_blocks.append(f"📍 {area}\nNo detailed forecast")
-            continue
+        for sentence in sentences:
+            # Время действия
+            time_match = re.search(r"(FORECAST UP TO|VALID FROM|VALID UNTIL)\s*([0-9]{1,2}\s+[A-Z]+\s+[0-9]{2,4}\s*[0-9]{0,2}\s*UTC)?", sentence, re.IGNORECASE)
+            time_str = time_match.group(2).strip() if time_match and time_match.group(2) else "N/A"
 
-        # Формируем читаемые блоки
-        area_block = [f"📍 {area}"]
-        for wind, sea in forecasts:
-            wind = re.sub(r"\s+", " ", wind).strip()
-            sea = sea.strip()
-            area_block.append(f"🌬 Wind: {wind}\n🌊 Sea: {sea}")
+            # Ветер
+            wind_match = re.findall(r"((?:NORTH|SOUTH|EAST|WEST|VARIABLE|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|[A-Z]+)+\s*\d+(?:\s*OR\s*\d+)?(?:\s*UP TO\s*\d+)?)", sentence, re.IGNORECASE)
+            wind_str = ", ".join([w.strip() for w in wind_match]) if wind_match else "N/A"
 
-        result_blocks.append("\n".join(area_block))
+            # Состояние моря
+            sea_match = re.findall(r"(SMOOTH|SLIGHT|MODERATE|ROUGH|CHANCE OF THUNDERSTORM)", sentence, re.IGNORECASE)
+            sea_str = ", ".join([s.strip() for s in sea_match]) if sea_match else "N/A"
+
+            # Формируем блок
+            result_blocks.append(f"📍 {area}\n🕒 Valid: {time_str}\n🌬 Wind: {wind_str}\n🌊 Sea: {sea_str}")
 
     if not result_blocks:
         return "No forecast available for TAURUS / DELTA / CRUSADE"
@@ -116,7 +113,7 @@ def get_metarea():
     soup = BeautifulSoup(r.text, "html.parser")
     text = soup.get_text()
     parsed = parse_metarea(text)
-    return parsed[:4000]  # Telegram limit
+    return parsed[:4000]  # Telegram лимит
 
 def check_metarea():
     text = get_metarea()
