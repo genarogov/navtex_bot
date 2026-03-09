@@ -2,3 +2,4 @@ requests
 beautifulsoup4
 python-telegram-bot==13.15
 feedparser
+folium
