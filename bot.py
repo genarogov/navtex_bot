@@ -4,22 +4,21 @@ import json
 import hashlib
 import re
 import requests
-from bs4 import BeautifulSoup
 from telegram import Bot, Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
 import feedparser
+from bs4 import BeautifulSoup
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 bot = Bot(token=TOKEN)
 
-CHECK_INTERVAL = 300  # 5 минут
+CHECK_INTERVAL = 300  # каждые 5 минут
 
 RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-WMO_BASE_URL = "https://wwmiws.wmo.int"
 WMO_PAGE_URL = "https://wwmiws.wmo.int/index.php/metareas/affiche/3"
-SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
+WMO_BASE_URL = "https://wwmiws.wmo.int"
 
 CACHE_FILE = "cache.json"
 ZONES = ["TAURUS", "DELTA", "CRUSADE"]
@@ -125,11 +124,11 @@ def fetch_wmo_txt():
             if ".txt" in l["href"]:
                 href = l["href"]
                 if not href.startswith("http"):
-                    href = WMO_BASE_URL + href
+                    href = WMO_BASE_URL + l["href"]
                 txt_links.append(href)
         messages=[]
         for link in txt_links:
-            t = requests.get(link).text
+            t = requests.get(link, timeout=15).text
             msgs = t.split("NAVAREA")
             for m in msgs:
                 if len(m.strip())>40:
@@ -138,39 +137,11 @@ def fetch_wmo_txt():
     except:
         return []
 
-def fetch_sealagom_msgs():
-    try:
-        r = requests.get(SEALAGOM_URL, timeout=20)
-        soup = BeautifulSoup(r.text, "html.parser")
-        table = soup.find("table")
-        messages=[]
-        if table:
-            for row in table.find_all("tr"):
-                cols = row.find_all("td")
-                if len(cols)>2:
-                    text = cols[1].get_text().strip()
-                    if "NAVAREA" in text:
-                        messages.append(text)
-        return messages
-    except:
-        return []
-
-def collect_navtex():
-    msgs=[]
-    msgs += fetch_wmo_txt()
-    msgs += fetch_sealagom_msgs()
-    uniq = {}
-    for m in msgs:
-        key = normalize(m)
-        if key not in uniq:
-            uniq[key] = m
-    return list(uniq.values())
-
 def extract_coords(text):
-    coords = re.findall(r"\d{2}-\d{2}[NS]\s*\d{3}-\d{2}[EW]", text)
+    # Ищем координаты формата 45-25N 029-15E
+    coords = re.findall(r"(\d{2}-\d{2}[NS])\s*(\d{3}-\d{2}[EW])", text)
     out=[]
-    for c in coords:
-        lat, lon = c.split()
+    for lat, lon in coords:
         latd, latm = int(lat[:2]), int(lat[3:5])
         if "S" in lat: latd*=-1
         lond, lonm = int(lon[:3]), int(lon[4:6])
@@ -181,7 +152,7 @@ def extract_coords(text):
     return out
 
 def check_navtex():
-    msgs = collect_navtex()
+    msgs = fetch_wmo_txt()
     for m in msgs:
         h = hash_msg(m)
         if h in cache["navtex_sent"]:
