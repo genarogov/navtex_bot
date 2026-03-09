@@ -17,8 +17,8 @@ CHECK_INTERVAL = 300  # каждые 5 минут
 
 RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-WMO_PAGE_URL = "https://wwmiws.wmo.int/index.php/metareas/affiche/3"
-WMO_BASE_URL = "https://wwmiws.wmo.int"
+
+SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
 
 CACHE_FILE = "cache.json"
 ZONES = ["TAURUS", "DELTA", "CRUSADE"]
@@ -26,7 +26,7 @@ ZONES = ["TAURUS", "DELTA", "CRUSADE"]
 # ---------------- CACHE ----------------
 def load_cache():
     if not os.path.exists(CACHE_FILE):
-        return {"gov": [], "metarea": "", "navtex_sent": [], "navtex_msgs": []}
+        return {"gov": [], "metarea": "", "navtex_msgs": []}
     with open(CACHE_FILE) as f:
         return json.load(f)
 
@@ -39,20 +39,6 @@ cache = load_cache()
 # ---------------- UTILS ----------------
 def hash_msg(text):
     return hashlib.sha1(text.encode()).hexdigest()
-
-def extract_coords(text):
-    # Формат: 45-25N 029-15E
-    coords = re.findall(r"(\d{2}-\d{2}[NS])\s*(\d{3}-\d{2}[EW])", text)
-    out=[]
-    for lat, lon in coords:
-        latd, latm = int(lat[:2]), int(lat[3:5])
-        if "S" in lat: latd*=-1
-        lond, lonm = int(lon[:3]), int(lon[4:6])
-        if "W" in lon: lond*=-1
-        latf = latd + latm/60
-        lonf = lond + lonm/60
-        out.append((latf, lonf))
-    return out
 
 # ---------------- GOV ----------------
 def format_gov(entry):
@@ -123,53 +109,26 @@ def metarea(update: Update, context: CallbackContext):
     update.message.reply_text(get_metarea())
 
 # ---------------- NAVTEX ----------------
-def fetch_wmo_txt():
+def fetch_sealagom_navtex():
     try:
-        r = requests.get(WMO_PAGE_URL, timeout=20)
+        r = requests.get(SEALAGOM_URL, timeout=20)
         soup = BeautifulSoup(r.text, "html.parser")
-        links = soup.find_all("a", href=True)
-        txt_links=[]
-        for l in links:
-            if ".txt" in l["href"]:
-                href = l["href"]
-                if not href.startswith("http"):
-                    href = WMO_BASE_URL + l["href"]
-                txt_links.append(href)
-        messages=[]
-        for link in txt_links:
-            t = requests.get(link, timeout=15).text
-            msgs = t.split("NAVAREA")
-            for m in msgs:
-                if len(m.strip())>40:
-                    messages.append("NAVAREA "+m.strip())
-        return messages
+        text = soup.get_text()
+        # Находим все сообщения формата 0037/26
+        msgs = re.split(r"\n(?=\d{4}/\d{2})", text)
+        # Оставляем только непустые и длинные
+        msgs = [m.strip() for m in msgs if len(m.strip())>20]
+        return msgs
     except:
         return []
 
-def check_navtex():
-    msgs = fetch_wmo_txt()
-    for m in msgs:
-        h = hash_msg(m)
-        if h in cache["navtex_sent"]:
-            continue
-        bot.send_message(CHAT_ID, "⚠️ NAVAREA WARNING\n\n" + m[:3500])
-        coords = extract_coords(m)
-        for lat, lon in coords:
-            bot.send_location(CHAT_ID, lat, lon)
-        cache["navtex_sent"].append(h)
-        cache["navtex_msgs"].append(m)
-        save_cache(cache)
-
 def last(update: Update, context: CallbackContext):
-    msgs = cache["navtex_msgs"][-5:]
+    msgs = fetch_sealagom_navtex()[-5:]
     if not msgs:
         update.message.reply_text("No NAVTEX messages yet")
         return
     for m in msgs:
         update.message.reply_text(m[:3500])
-        coords = extract_coords(m)
-        for lat, lon in coords:
-            update.message.reply_location(lat, lon)
 
 # ---------------- COMMANDS ----------------
 def test(update: Update, context: CallbackContext):
@@ -189,7 +148,6 @@ def main():
         try:
             check_gov()
             check_metarea()
-            check_navtex()
         except Exception as e:
             print(e)
         time.sleep(CHECK_INTERVAL)
