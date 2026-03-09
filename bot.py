@@ -40,10 +40,19 @@ cache = load_cache()
 def hash_msg(text):
     return hashlib.sha1(text.encode()).hexdigest()
 
-def normalize(text):
-    text = text.upper()
-    text = re.sub(r"\s+", " ", text)
-    return text[:200]
+def extract_coords(text):
+    # Формат: 45-25N 029-15E
+    coords = re.findall(r"(\d{2}-\d{2}[NS])\s*(\d{3}-\d{2}[EW])", text)
+    out=[]
+    for lat, lon in coords:
+        latd, latm = int(lat[:2]), int(lat[3:5])
+        if "S" in lat: latd*=-1
+        lond, lonm = int(lon[:3]), int(lon[4:6])
+        if "W" in lon: lond*=-1
+        latf = latd + latm/60
+        lonf = lond + lonm/60
+        out.append((latf, lonf))
+    return out
 
 # ---------------- GOV ----------------
 def format_gov(entry):
@@ -136,20 +145,6 @@ def fetch_wmo_txt():
         return messages
     except:
         return []
-
-def extract_coords(text):
-    # Ищем координаты формата 45-25N 029-15E
-    coords = re.findall(r"(\d{2}-\d{2}[NS])\s*(\d{3}-\d{2}[EW])", text)
-    out=[]
-    for lat, lon in coords:
-        latd, latm = int(lat[:2]), int(lat[3:5])
-        if "S" in lat: latd*=-1
-        lond, lonm = int(lon[:3]), int(lon[4:6])
-        if "W" in lon: lond*=-1
-        latf = latd + latm/60
-        lonf = lond + lonm/60
-        out.append((latf, lonf))
-    return out
 
 def check_navtex():
     msgs = fetch_wmo_txt()
