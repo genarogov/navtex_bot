@@ -1,13 +1,13 @@
 import os
 import time
 import json
-import re
 import hashlib
+import re
 import requests
-import feedparser
 from bs4 import BeautifulSoup
 from telegram import Bot, Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
+import feedparser
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -17,7 +17,8 @@ CHECK_INTERVAL = 300  # 5 минут
 
 RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-WMO_URL = "https://wwmiws.wmo.int/index.php/metareas/affiche/3"
+WMO_BASE_URL = "https://wwmiws.wmo.int"
+WMO_PAGE_URL = "https://wwmiws.wmo.int/index.php/metareas/affiche/3"
 SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
 
 CACHE_FILE = "cache.json"
@@ -72,32 +73,35 @@ def lastgov(update: Update, context: CallbackContext):
 
 # ---------------- METAREA ----------------
 def get_metarea():
-    r = requests.get(METAREA_URL, timeout=20)
-    soup = BeautifulSoup(r.text, "html.parser")
-    text = soup.get_text()
-    issued = re.search(r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC", text)
-    issued = issued.group(0) if issued else "N/A"
+    try:
+        r = requests.get(METAREA_URL, timeout=20)
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text()
+        issued = re.search(r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC", text)
+        issued = issued.group(0) if issued else "N/A"
 
-    start = text.find("TAURUS")
-    end = text.find("KASTELLORIZO SEA")
-    if start == -1 or end == -1:
-        return "Forecast not found"
+        start = text.find("TAURUS")
+        end = text.find("KASTELLORIZO SEA")
+        if start == -1 or end == -1:
+            return "Forecast not found"
 
-    forecast = text[start:end]
-    blocks=[]
-    for i, zone in enumerate(ZONES):
-        s = forecast.find(zone)
-        if s == -1:
-            continue
-        nxt = [forecast.find(z, s+1) for z in ZONES[i+1:]]
-        nxt = [n for n in nxt if n!=-1]
-        e = min(nxt) if nxt else len(forecast)
-        txt = forecast[s:e].strip()
-        if txt.startswith(zone):
-            txt = txt[len(zone):].lstrip()
-        blocks.append(f"📍 {zone}\n{txt}")
-    msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
-    return msg[:4000]
+        forecast = text[start:end]
+        blocks=[]
+        for i, zone in enumerate(ZONES):
+            s = forecast.find(zone)
+            if s == -1:
+                continue
+            nxt = [forecast.find(z, s+1) for z in ZONES[i+1:]]
+            nxt = [n for n in nxt if n!=-1]
+            e = min(nxt) if nxt else len(forecast)
+            txt = forecast[s:e].strip()
+            if txt.startswith(zone):
+                txt = txt[len(zone):].lstrip()
+            blocks.append(f"📍 {zone}\n{txt}")
+        msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
+        return msg[:4000]
+    except:
+        return "Error loading METAREA"
 
 def check_metarea():
     text = get_metarea()
@@ -111,43 +115,50 @@ def metarea(update: Update, context: CallbackContext):
     update.message.reply_text(get_metarea())
 
 # ---------------- NAVTEX ----------------
-def fetch_wmo():
-    r = requests.get(WMO_URL, timeout=20)
-    soup = BeautifulSoup(r.text, "html.parser")
-    links = soup.find_all("a")
-    txt=None
-    for l in links:
-        href=l.get("href","")
-        if ".txt" in href:
-            txt=href
-    if not txt:
+def fetch_wmo_txt():
+    try:
+        r = requests.get(WMO_PAGE_URL, timeout=20)
+        soup = BeautifulSoup(r.text, "html.parser")
+        links = soup.find_all("a", href=True)
+        txt_links=[]
+        for l in links:
+            if ".txt" in l["href"]:
+                href = l["href"]
+                if not href.startswith("http"):
+                    href = WMO_BASE_URL + href
+                txt_links.append(href)
+        messages=[]
+        for link in txt_links:
+            t = requests.get(link).text
+            msgs = t.split("NAVAREA")
+            for m in msgs:
+                if len(m.strip())>40:
+                    messages.append("NAVAREA "+m.strip())
+        return messages
+    except:
         return []
-    if not txt.startswith("http"):
-        txt = "https://wwmiws.wmo.int"+txt
-    text = requests.get(txt).text
-    msgs = text.split("NAVAREA")
-    res=[]
-    for m in msgs:
-        if len(m.strip())<40:
-            continue
-        res.append("NAVAREA "+m.strip())
-    return res
 
-def fetch_sealagom():
-    r = requests.get(SEALAGOM_URL, timeout=20)
-    soup = BeautifulSoup(r.text, "html.parser")
-    ps = soup.find_all("p")
-    res=[]
-    for p in ps:
-        t=p.get_text().strip()
-        if "NAVAREA" in t:
-            res.append(t)
-    return res
+def fetch_sealagom_msgs():
+    try:
+        r = requests.get(SEALAGOM_URL, timeout=20)
+        soup = BeautifulSoup(r.text, "html.parser")
+        table = soup.find("table")
+        messages=[]
+        if table:
+            for row in table.find_all("tr"):
+                cols = row.find_all("td")
+                if len(cols)>2:
+                    text = cols[1].get_text().strip()
+                    if "NAVAREA" in text:
+                        messages.append(text)
+        return messages
+    except:
+        return []
 
 def collect_navtex():
-    msgs = []
-    msgs += fetch_wmo()
-    msgs += fetch_sealagom()
+    msgs=[]
+    msgs += fetch_wmo_txt()
+    msgs += fetch_sealagom_msgs()
     uniq = {}
     for m in msgs:
         key = normalize(m)
