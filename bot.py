@@ -3,30 +3,27 @@ import time
 import json
 import re
 import requests
+from bs4 import BeautifulSoup
 from telegram import Bot, Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
-from bs4 import BeautifulSoup
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 bot = Bot(token=TOKEN)
 
-CHECK_INTERVAL = 300  # 5 минут, но GOV проверяется каждые 15 минут
-
-SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
-METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-GOV_URL = "https://www.gov.il/en/Departments/DynamicCollectors/notice-to-mariners?skip=0"
-GOV_INTERVAL = 900  # 15 минут
+CHECK_INTERVAL = 300  # 5 мин
+GOV_INTERVAL = 900    # 15 мин
 
 CACHE_FILE = "cache.json"
-ZONES = ["TAURUS", "DELTA", "CRUSADE"]
+SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
+METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
+GOV_INDEX_URL = "https://www.gov.il/en/Departments/DynamicCollectors/notice-to-mariners?skip=0"
 
 headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/116.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 }
 
-# ---------------- CACHE ----------------
 def load_cache():
     if not os.path.exists(CACHE_FILE):
         return {"gov": [], "metarea": "", "navtex": []}
@@ -39,7 +36,7 @@ def save_cache(data):
 
 cache = load_cache()
 
-# ---------------- UNIVERSAL COORDINATE PARSER ----------------
+# ---------------- universal coord parser ----------------
 def convert_to_decimal(deg, minutes, direction):
     value = float(deg) + float(minutes)/60
     if direction in ["S","W"]:
@@ -48,8 +45,7 @@ def convert_to_decimal(deg, minutes, direction):
 
 def add_coordinate_links(text):
     coord_pattern = re.compile(
-        r'(\d{1,3})[°\-\s]+(\d{1,2}\.\d+)\s*([NSEW])',
-        re.IGNORECASE
+        r'(\d{1,3})[°\-\s]+(\d{1,2}\.\d+)\s*([NSEW])', re.IGNORECASE
     )
     coords = list(coord_pattern.finditer(text))
     replacements = []
@@ -73,83 +69,113 @@ def add_coordinate_links(text):
         text = text[:start] + html + text[end:]
     return text
 
-# ---------------- METAREA ----------------
-def get_metarea():
+# ---------------- GOV ----------------
+
+def fetch_gov_index():
     try:
-        r = requests.get(METAREA_URL, timeout=20)
+        r = requests.get(GOV_INDEX_URL, headers=headers, timeout=20)
         soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text()
-        issued = re.search(r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC", text)
-        issued = issued.group(0) if issued else "N/A"
-        start = text.find("TAURUS")
-        end = text.find("KASTELLORIZO SEA")
-        if start == -1 or end == -1:
-            return "Forecast not found"
-        forecast = text[start:end]
-        blocks=[]
-        for i, zone in enumerate(ZONES):
-            s = forecast.find(zone)
-            if s == -1:
-                continue
-            nxt = [forecast.find(z, s+1) for z in ZONES[i+1:]]
-            nxt = [n for n in nxt if n!=-1]
-            e = min(nxt) if nxt else len(forecast)
-            txt = forecast[s:e].strip()
-            if txt.startswith(zone):
-                txt = txt[len(zone):].lstrip()
-            blocks.append(f"📍 {zone}\n{txt}")
-        msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
-        return msg[:4000]
-    except:
-        return "Error loading METAREA"
+        # ищем ссылки на notice
+        links = soup.find_all("a", href=re.compile(r"/en/pages/mariners-"))
+        results = []
+        for a in links:
+            href = a.get("href")
+            if not href.startswith("http"):
+                href = "https://www.gov.il" + href
+            # номер определяем из текста или href
+            num_match = re.search(r"(\d{1,4}/\d{4})", a.text)
+            notice_number = num_match.group(0) if num_match else href
+            results.append((notice_number, href))
+        # убрать дубли и оставить 5
+        seen = set()
+        out = []
+        for num, link in results:
+            if num not in seen:
+                seen.add(num)
+                out.append((num, link))
+            if len(out)>=5:
+                break
+        return out
+    except Exception as e:
+        print("Error fetching GOV index:", e)
+        return []
 
-def check_metarea():
-    text = get_metarea()
-    if text == cache["metarea"]:
+def fetch_gov_notice_page(link):
+    try:
+        r2 = requests.get(link, headers=headers, timeout=20)
+        soup2 = BeautifulSoup(r2.text, "html.parser")
+        # основной текст
+        content_div = soup2.find("div", class_=re.compile("govil-page-content"))
+        text = content_div.get_text("\n").strip() if content_div else ""
+        # subject
+        subject = ""
+        sub = soup2.find(string=re.compile("Subject", re.IGNORECASE))
+        if sub:
+            subject = sub.strip()
+        # valid from / until
+        valid = ""
+        vf = soup2.find(string=re.compile("Valid from", re.IGNORECASE))
+        if vf:
+            valid = vf.strip()
+        return subject, valid, text
+    except Exception as e:
+        print("Error fetching notice page:", e)
+        return "", "", ""
+
+def check_gov():
+    notices = fetch_gov_index()
+    for notice_number, link in notices:
+        if notice_number in cache.get("gov", []):
+            continue
+        subject, valid, body = fetch_gov_notice_page(link)
+        full_text = f'⚓ <a href="{link}">Notice {notice_number}</a>\nSubject: {subject}\n{valid}\n\n{body}'
+        full_text = add_coordinate_links(full_text)
+        bot.send_message(CHAT_ID, full_text, parse_mode="HTML", disable_web_page_preview=True)
+        cache.setdefault("gov", []).append(notice_number)
+        save_cache(cache)
+
+def lastgov(update: Update, context: CallbackContext):
+    notices = fetch_gov_index()
+    if not notices:
+        update.message.reply_text("No GOV notices found")
         return
-    cache["metarea"] = text
-    save_cache(cache)
-    bot.send_message(CHAT_ID, "🌊 METAREA III FORECAST\n\n" + text)
+    for notice_number, link in notices:
+        subject, valid, body = fetch_gov_notice_page(link)
+        full_text = f'⚓ <a href="{link}">Notice {notice_number}</a>\nSubject: {subject}\n{valid}\n\n{body}'
+        full_text = add_coordinate_links(full_text)
+        update.message.reply_text(full_text, parse_mode="HTML", disable_web_page_preview=True)
 
-def metarea(update: Update, context: CallbackContext):
-    update.message.reply_text(get_metarea())
-
-# ---------------- NAVTEX ----------------
+# ---------------- NAVTEX as before ----------------
 def fetch_sealagom_navtex():
     try:
         r = requests.get(SEALAGOM_URL, timeout=20)
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(r.text,"html.parser")
         text = soup.get_text("\n")
         raw_msgs = re.split(r"\n(?=\d{4}/\d{2})", text)
-        messages = []
+        messages=[]
         for m in raw_msgs:
-            date_match = re.search(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+\d{2}:\d{2}\s+UTC", m)
+            date_match = re.search(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+\d{2}:\d{2}\s+UTC",m)
             if not date_match:
                 continue
             start = date_match.start()
-            end_match = re.search(r"\bDetails\b", m)
+            end_match = re.search(r"\bDetails\b",m)
             if not end_match:
                 continue
             end = end_match.start()
             clean = m[start:end].strip()
-            if len(clean) > 30:
+            if len(clean)>30:
                 messages.append(clean)
         return messages[:5]
-    except Exception as e:
-        print(e)
-        return []
-
+    except: return []
 def send_navtex():
     messages = fetch_sealagom_navtex()
     new_msgs = [m for m in messages if m not in cache["navtex"]]
-    if not new_msgs:
-        return
+    if not new_msgs: return
     for m in new_msgs:
         msg = add_coordinate_links(m[:3500])
         bot.send_message(CHAT_ID, msg, parse_mode="HTML", disable_web_page_preview=True)
         cache["navtex"].append(m)
     save_cache(cache)
-
 def last(update: Update, context: CallbackContext):
     msgs = fetch_sealagom_navtex()
     if not msgs:
@@ -159,73 +185,14 @@ def last(update: Update, context: CallbackContext):
         msg = add_coordinate_links(m[:3500])
         update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
 
-# ---------------- GOV ----------------
-def fetch_gov_notices():
-    try:
-        r = requests.get(GOV_URL, headers=headers, timeout=20)
-        soup = BeautifulSoup(r.text, "html.parser")
-        blocks = soup.find_all("div", class_="notice-collector-block")
-        notices = []
-        for block in blocks[:10]:
-            # Notice number
-            num_tag = block.find(string=re.compile(r"\d{1,4}\s*/\s*\d{4}"))
-            if not num_tag:
-                continue
-            notice_number = num_tag.strip().replace(" ", "")
-            # Link
-            link_tag = block.find("a", string=re.compile("Link to notice"))
-            if not link_tag:
-                continue
-            link = link_tag.get("href")
-            if not link.startswith("http"):
-                link = "https://www.gov.il" + link
-            # Заходим на страницу notice
-            r2 = requests.get(link, headers=headers, timeout=20)
-            soup2 = BeautifulSoup(r2.text, "html.parser")
-            content_div = soup2.find("div", class_=re.compile("govil-page-content"))
-            text = content_div.get_text("\n").strip() if content_div else ""
-            # Subject и valid from/until
-            subject_tag = block.find(string=re.compile(r"Subject"))
-            subject = subject_tag.strip() if subject_tag else ""
-            valid_tag = block.find(string=re.compile(r"Valid from"))
-            valid = valid_tag.strip() if valid_tag else ""
-            # Полный текст
-            full_text = f'⚓ <a href="{link}">Notice {notice_number}</a>\nSubject: {subject}\n{valid}\n\n{text}'
-            notices.append((notice_number, full_text))
-        return notices[:5]
-    except Exception as e:
-        print("Error fetching GOV notices:", e)
-        return []
-
-def check_gov():
-    notices = fetch_gov_notices()
-    for notice_number, full_text in notices:
-        if notice_number in cache.get("gov", []):
-            continue
-        full_text = add_coordinate_links(full_text)
-        bot.send_message(CHAT_ID, full_text, parse_mode="HTML", disable_web_page_preview=True)
-        cache.setdefault("gov", []).append(notice_number)
-        save_cache(cache)
-
-def lastgov(update: Update, context: CallbackContext):
-    notices = fetch_gov_notices()
-    if not notices:
-        update.message.reply_text("No GOV notices found")
-        return
-    for notice_number, full_text in notices:
-        full_text = add_coordinate_links(full_text)
-        update.message.reply_text(full_text, parse_mode="HTML", disable_web_page_preview=True)
-
-# ---------------- COMMANDS ----------------
-def test(update: Update, context: CallbackContext):
-    update.message.reply_text("✅ Bot running")
-
 # ---------------- MAIN ----------------
+def test(update: Update, context: CallbackContext):
+    update.message.reply_text("Bot running")
+
 def main():
     updater = Updater(TOKEN)
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("test", test))
-    dp.add_handler(CommandHandler("metarea", metarea))
     dp.add_handler(CommandHandler("lastgov", lastgov))
     dp.add_handler(CommandHandler("last", last))
     updater.start_polling()
@@ -233,14 +200,12 @@ def main():
     last_gov_check = 0
     while True:
         try:
-            # Проверка GOV каждые 15 минут
             if time.time() - last_gov_check >= GOV_INTERVAL:
                 check_gov()
                 last_gov_check = time.time()
-            check_metarea()
             send_navtex()
         except Exception as e:
-            print(e)
+            print("Error:",e)
         time.sleep(CHECK_INTERVAL)
 
 if __name__=="__main__":
