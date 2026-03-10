@@ -164,31 +164,63 @@ def fetch_sealagom_navtex():
         print(e)
         return []
 
-# ---------------- COORDINATE LINKS ----------------
+# ---------------- UNIVERSAL COORDINATE PARSER ----------------
+def convert_to_decimal(deg, minutes, direction):
+
+    value = float(deg) + float(minutes)/60
+
+    if direction in ["S","W"]:
+        value = -value
+
+    return value
+
+
 def add_coordinate_links(text):
 
-    pattern = re.compile(r'(\d{1,2})-(\d{1,2}\.\d+)([NS])\s+(\d{1,3})-(\d{1,2}\.\d+)([EW])')
+    coord_pattern = re.compile(
+        r'(\d{1,3})[°\-\s]+(\d{1,2}\.\d+)\s*([NSEW])',
+        re.IGNORECASE
+    )
 
-    def repl(match):
+    coords = list(coord_pattern.finditer(text))
 
-        lat_deg, lat_min, lat_dir, lon_deg, lon_min, lon_dir = match.groups()
+    replacements = []
 
-        lat = int(lat_deg) + float(lat_min)/60
-        lon = int(lon_deg) + float(lon_min)/60
+    i = 0
 
-        if lat_dir == "S":
-            lat = -lat
+    while i < len(coords) - 1:
 
-        if lon_dir == "W":
-            lon = -lon
+        lat = coords[i]
+        lon = coords[i+1]
 
-        original = match.group(0)
+        if lat.group(3).upper() in ["N","S"] and lon.group(3).upper() in ["E","W"]:
 
-        link = f"https://maps.google.com/?q={lat},{lon}"
+            lat_val = convert_to_decimal(lat.group(1), lat.group(2), lat.group(3).upper())
+            lon_val = convert_to_decimal(lon.group(1), lon.group(2), lon.group(3).upper())
 
-        return f'<a href="{link}">{original}</a>'
+            start = lat.start()
+            end = lon.end()
 
-    return pattern.sub(repl, text)
+            original = text[start:end]
+
+            link = f"https://maps.google.com/?q={lat_val},{lon_val}"
+
+            html = f'<a href="{link}">{original}</a>'
+
+            replacements.append((start,end,html))
+
+            i += 2
+
+        else:
+
+            i += 1
+
+    for start,end,html in reversed(replacements):
+
+        text = text[:start] + html + text[end:]
+
+    return text
+
 
 def send_navtex():
 
@@ -208,6 +240,7 @@ def send_navtex():
         cache["navtex"].append(m)
 
     save_cache(cache)
+
 
 def last(update: Update, context: CallbackContext):
 
