@@ -3,12 +3,10 @@ import time
 import json
 import re
 import requests
-import feedparser
-from io import BytesIO
-import folium
-from bs4 import BeautifulSoup
 from telegram import Bot, Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
+import feedparser
+from bs4 import BeautifulSoup
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -83,15 +81,22 @@ def get_metarea():
         blocks=[]
 
         for i, zone in enumerate(ZONES):
+
             s = forecast.find(zone)
+
             if s == -1:
                 continue
+
             nxt = [forecast.find(z, s+1) for z in ZONES[i+1:]]
             nxt = [n for n in nxt if n!=-1]
+
             e = min(nxt) if nxt else len(forecast)
+
             txt = forecast[s:e].strip()
+
             if txt.startswith(zone):
                 txt = txt[len(zone):].lstrip()
+
             blocks.append(f"📍 {zone}\n{txt}")
 
         msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
@@ -102,11 +107,16 @@ def get_metarea():
         return "Error loading METAREA"
 
 def check_metarea():
+
     text = get_metarea()
+
     if text == cache["metarea"]:
         return
+
     cache["metarea"] = text
+
     save_cache(cache)
+
     bot.send_message(CHAT_ID, "🌊 METAREA III FORECAST\n\n" + text)
 
 def metarea(update: Update, context: CallbackContext):
@@ -114,90 +124,104 @@ def metarea(update: Update, context: CallbackContext):
 
 # ---------------- NAVTEX ----------------
 def fetch_sealagom_navtex():
+
     try:
+
         r = requests.get(SEALAGOM_URL, timeout=20)
+
         soup = BeautifulSoup(r.text, "html.parser")
+
         text = soup.get_text("\n")
+
         raw_msgs = re.split(r"\n(?=\d{4}/\d{2})", text)
+
         messages = []
+
         for m in raw_msgs:
+
             date_match = re.search(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+\d{2}:\d{2}\s+UTC", m)
+
             if not date_match:
                 continue
+
             start = date_match.start()
+
             end_match = re.search(r"\bDetails\b", m)
+
             if not end_match:
                 continue
+
             end = end_match.start()
+
             clean = m[start:end].strip()
+
             if len(clean) > 30:
                 messages.append(clean)
+
         return messages[:5]
+
     except Exception as e:
-        print("Error fetching NAVTEX:", e)
+        print(e)
         return []
 
-# ---------------- COORDINATES PARSER ----------------
-def parse_navtex_coordinates(text):
-    coords = []
+# ---------------- COORDINATE LINKS ----------------
+def add_coordinate_links(text):
+
     pattern = re.compile(r'(\d{1,2})-(\d{1,2}\.\d+)([NS])\s+(\d{1,3})-(\d{1,2}\.\d+)([EW])')
-    for match in pattern.finditer(text):
+
+    def repl(match):
+
         lat_deg, lat_min, lat_dir, lon_deg, lon_min, lon_dir = match.groups()
+
         lat = int(lat_deg) + float(lat_min)/60
         lon = int(lon_deg) + float(lon_min)/60
-        if lat_dir.upper() == "S":
+
+        if lat_dir == "S":
             lat = -lat
-        if lon_dir.upper() == "W":
+
+        if lon_dir == "W":
             lon = -lon
-        coords.append((lat, lon))
-    return coords
 
-# ---------------- MAP GENERATOR ----------------
-def generate_map(coords):
-    if not coords:
-        return None
-    m = folium.Map(location=coords[0], zoom_start=6)
-    if len(coords) == 1:
-        folium.Marker(coords[0]).add_to(m)
-    else:
-        folium.PolyLine(coords, color="blue", weight=3, opacity=0.7).add_to(m)
-        for c in coords:
-            folium.CircleMarker(c, radius=4, color="red").add_to(m)
-    # Сохраняем в BytesIO как HTML, потом используем библиотеку selenium или imgkit для конвертации в PNG
-    # Для Railway оставим HTML-сохранение и отправку как файл (Telegram поддерживает .html)
-    img_data = BytesIO()
-    m.save(img_data, close_file=False)
-    img_data.seek(0)
-    return img_data
+        original = match.group(0)
 
-# ---------------- SEND NAVTEX WITH MAP ----------------
-def send_navtex_with_map():
+        link = f"https://maps.google.com/?q={lat},{lon}"
+
+        return f'<a href="{link}">{original}</a>'
+
+    return pattern.sub(repl, text)
+
+def send_navtex():
+
     messages = fetch_sealagom_navtex()
+
     new_msgs = [m for m in messages if m not in cache["navtex"]]
+
     if not new_msgs:
         return
+
     for m in new_msgs:
-        bot.send_message(CHAT_ID, m[:3500])
-        coords = parse_navtex_coordinates(m)
-        if coords:
-            map_file = generate_map(coords)
-            if map_file:
-                bot.send_document(CHAT_ID, document=map_file, filename="navtex_map.html")
+
+        msg = add_coordinate_links(m[:3500])
+
+        bot.send_message(CHAT_ID, msg, parse_mode="HTML", disable_web_page_preview=True)
+
         cache["navtex"].append(m)
+
     save_cache(cache)
 
 def last(update: Update, context: CallbackContext):
+
     msgs = fetch_sealagom_navtex()
+
     if not msgs:
         update.message.reply_text("No NAVTEX messages")
         return
+
     for m in msgs:
-        update.message.reply_text(m[:3500])
-        coords = parse_navtex_coordinates(m)
-        if coords:
-            map_file = generate_map(coords)
-            if map_file:
-                update.message.reply_document(document=map_file, filename="navtex_map.html")
+
+        msg = add_coordinate_links(m[:3500])
+
+        update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
 
 # ---------------- COMMANDS ----------------
 def test(update: Update, context: CallbackContext):
@@ -205,7 +229,9 @@ def test(update: Update, context: CallbackContext):
 
 # ---------------- MAIN ----------------
 def main():
+
     updater = Updater(TOKEN)
+
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("test", test))
@@ -214,15 +240,20 @@ def main():
     dp.add_handler(CommandHandler("last", last))
 
     updater.start_polling()
+
     print("BOT STARTED")
 
     while True:
+
         try:
+
             check_gov()
             check_metarea()
-            send_navtex_with_map()  # Авто-пуш NAVTEX с картой
+            send_navtex()
+
         except Exception as e:
-            print("Error:", e)
+            print(e)
+
         time.sleep(CHECK_INTERVAL)
 
 if __name__=="__main__":
