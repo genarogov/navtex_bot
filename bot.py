@@ -3,7 +3,6 @@ import re
 import time
 import json
 import requests
-import feedparser
 from bs4 import BeautifulSoup
 from telegram.ext import Updater, CommandHandler
 
@@ -14,7 +13,6 @@ CHECK_INTERVAL = 1800  # 30 минут
 
 SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 
 ZONES = ["TAURUS","DELTA","CRUSADE"]
 
@@ -24,7 +22,6 @@ def load_cache():
         return {
             "sealagom": [],
             "gov": {"last_number": "019", "year": "2026", "last_format": "_", "last_url": ""},
-            "rss": []
         }
     with open(CACHE_FILE) as f:
         return json.load(f)
@@ -66,7 +63,7 @@ def add_coordinate_links(text):
         text = text[:start]+html+text[end:]
     return text
 
-# ---------------- SEALAGOM NAVTEX ----------------
+# ---------------- SEALAGOM ----------------
 def fetch_sealagom():
     try:
         r = requests.get(SEALAGOM_URL, timeout=20)
@@ -120,15 +117,13 @@ def check_next_gov():
     year = cache["gov"]["year"]
     fmt = cache["gov"]["last_format"]
     urls_to_check = [generate_gov_url(str(int(last_number)+1), year, fmt)]
-    # альтернативный формат
     alt_fmt = "-" if fmt == "_" else "_"
     urls_to_check.append(generate_gov_url(str(int(last_number)+1), year, alt_fmt))
     for url in urls_to_check:
         try:
             r = requests.get(url, timeout=15)
             if r.status_code == 200:
-                # нашлось новое сообщение
-                return url, str(int(last_number)+1), url, "_" if "_" in url else "-"
+                return url, str(int(last_number)+1), "_" if "_" in url else "-"
         except:
             continue
     # проверка нового года
@@ -138,13 +133,13 @@ def check_next_gov():
         try:
             r = requests.get(url, timeout=15)
             if r.status_code == 200:
-                return url, "001", url, "_" if "_" in url else "-"
+                return url, "001", "_" if "_" in url else "-"
         except:
             continue
-    return None, None, cache["gov"]["last_url"], cache["gov"]["last_format"]
+    return None, None, None
 
 def send_gov(updater):
-    url, new_number, last_url, fmt = check_next_gov()
+    url, new_number, fmt = check_next_gov()
     if url:
         updater.bot.send_message(CHAT_ID, f"Last message from GOV.il: {url}")
         cache["gov"]["last_number"] = new_number
@@ -152,8 +147,10 @@ def send_gov(updater):
         cache["gov"]["last_url"] = url
         save_cache(cache)
     else:
-        # если новых нет → присылаем последнюю доступную ссылку
-        updater.bot.send_message(CHAT_ID, f"Last message from GOV.il: {last_url}")
+        # если новых нет → присылаем последнюю ссылку
+        last_url = cache["gov"]["last_url"]
+        if last_url:
+            updater.bot.send_message(CHAT_ID, f"Last message from GOV.il: {last_url}")
 
 def testgov(update, context):
     send_gov(update)
@@ -186,17 +183,6 @@ def get_metarea():
 def metarea(update,context):
     update.message.reply_text(get_metarea())
 
-# ---------------- RSS ----------------
-def send_rss(updater):
-    feed = feedparser.parse(RSS_URL)
-    new_entries = [e for e in feed.entries if e.link not in cache["rss"]]
-    for e in new_entries:
-        msg = f"RSS GOV IL: {e.title}\n{e.link}"
-        updater.bot.send_message(CHAT_ID, msg)
-        cache["rss"].append(e.link)
-    if new_entries:
-        save_cache(cache)
-
 # ---------------- TESTBOT ----------------
 def testbot(update, context):
     update.message.reply_text("✅ Bot running")
@@ -219,7 +205,6 @@ def main():
         try:
             send_sealagom(updater)
             send_gov(updater)
-            send_rss(updater)
         except Exception as e:
             print("Auto check error:", e)
         time.sleep(CHECK_INTERVAL)
