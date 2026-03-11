@@ -82,27 +82,32 @@ def fetch_navtex():
 
         text = soup.get_text("\n")
 
-        text = re.sub(r'\n+', '\n', text)
-
-        blocks = re.split(r'(?=\d{4}/\d{2})', text)
+        raw_msgs = re.split(r"\n(?=\d{4}/\d{2})", text)
 
         messages = []
 
-        for block in blocks:
+        for m in raw_msgs:
 
-            if len(block) < 50:
-                continue
-
-            date_match = re.search(r'\d{1,2}\s+[A-Za-z]+\s+\d{4}', block)
+            date_match = re.search(
+                r"\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+\d{2}:\d{2}\s+UTC",
+                m
+            )
 
             if not date_match:
                 continue
 
-            clean = block.strip()
+            start = date_match.start()
 
-            clean = re.split(r'Details|NAVAREA|Share', clean)[0]
+            end_match = re.search(r"\bDetails\b", m)
 
-            if len(clean) > 40:
+            if not end_match:
+                continue
+
+            end = end_match.start()
+
+            clean = m[start:end].strip()
+
+            if len(clean) > 30:
                 messages.append(clean)
 
         return messages[:5]
@@ -120,18 +125,11 @@ def last(update,context):
 
     if not msgs:
 
-        update.message.reply_text("No NAVTEX messages found")
+        update.message.reply_text("No NAVTEX messages")
 
         return
 
-    sent=set()
-
     for m in msgs:
-
-        if m in sent:
-            continue
-
-        sent.add(m)
 
         msg = add_coordinate_links(m[:3500])
 
@@ -216,52 +214,40 @@ def get_notice_text(url):
 
 def get_gov_notices():
 
-    try:
+    headers = {
+        "User-Agent":"Mozilla/5.0",
+        "Accept":"application/json"
+    }
 
-        headers = {
-            "User-Agent":"Mozilla/5.0",
-            "Accept":"application/json"
-        }
+    r = requests.get(GOV_API,headers=headers,timeout=20)
 
-        r = requests.get(GOV_API,headers=headers,timeout=20)
+    data = r.json()
 
-        data = r.json()
+    notices=[]
 
-        notices=[]
+    for item in data["Results"][:5]:
 
-        results = data.get("Results",[])
+        d = item.get("Data",{})
 
-        for item in results[:5]:
+        number = d.get("number","")
 
-            d = item.get("Data",{})
+        subject = d.get("subject","")
 
-            number = d.get("number","")
+        valid = d.get("valid","")
 
-            subject = d.get("subject","")
+        until = d.get("date","")
 
-            valid = d.get("valid","")
+        link = "https://www.gov.il" + d["link_to_notice"]["URL"]
 
-            until = d.get("date","")
+        notices.append({
+            "number":number,
+            "subject":subject,
+            "valid":valid,
+            "until":until,
+            "link":link
+        })
 
-            link_data = d.get("link_to_notice",{})
-
-            link = "https://www.gov.il" + link_data.get("URL","")
-
-            notices.append({
-                "number":number,
-                "subject":subject,
-                "valid":valid,
-                "until":until,
-                "link":link
-            })
-
-        return notices
-
-    except Exception as e:
-
-        print("GOV error:",e)
-
-        return []
+    return notices
 
 
 def lastgov(update,context):
