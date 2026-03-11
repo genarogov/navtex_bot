@@ -8,7 +8,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 
 SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-GOV_JSON_URL = "https://www.gov.il/en/collectors/publications?officeId=4b7bb398-52f7-45a1-8722-6cec1bd45733"
 
 ZONES = ["TAURUS","DELTA","CRUSADE"]
 
@@ -115,43 +114,34 @@ def metarea(update,context):
     update.message.reply_text(get_metarea())
 
 # ---------------- GOV ----------------
-
-def get_notice_text(url):
-    try:
-        r = requests.get(url,timeout=20)
-        soup = BeautifulSoup(r.text,"html.parser")
-        content = soup.find("div",{"id":"content"})
-        if not content:
-            content = soup
-        text = content.get_text("\n")
-        text = re.sub(r"\n{2,}","\n\n",text)
-        return text[:3500]
-    except Exception as e:
-        print("GOV notice text error:", e)
-        return ""
+# только блок /lastgov переписан
+GOV_NTM_URLS = [
+    "https://www.gov.il/en/pages/mariners-011-2026",
+    "https://www.gov.il/en/pages/mariners-010-2026",
+    "https://www.gov.il/en/pages/mariners-009-2026",
+    "https://www.gov.il/en/pages/mariners-008-2026",
+    "https://www.gov.il/en/pages/mariners-007-2026",
+]
 
 def get_gov_notices():
-    try:
-        r = requests.get(GOV_JSON_URL, timeout=20)
-        data = r.json()
-        results = data.get("Items", [])
-        notices = []
-        for item in results:
-            title = item.get("Title","")
-            pub_link = item.get("Url","")
-            if not pub_link:
+    notices = []
+    for url in GOV_NTM_URLS:
+        try:
+            r = requests.get(url, timeout=15)
+            soup = BeautifulSoup(r.text, "html.parser")
+            h1 = soup.find("h1")
+            if not h1:
                 continue
-            if "NOTICE TO MARINER" not in title.upper():
-                continue
-            notices.append({
-                "number": title.split(" ")[-1],  # последний элемент, например "011/2026"
-                "subject": title,
-                "link": "https://www.gov.il" + pub_link
-            })
-        return notices[:5]
-    except Exception as e:
-        print("GOV error:", e)
-        return []
+            title_text = h1.get_text().strip()
+            if "NOTICE TO MARINER" in title_text.upper():
+                notices.append({
+                    "number": title_text,
+                    "link": url
+                })
+        except Exception as e:
+            print("GOV page error:", e)
+            continue
+    return notices[:5]
 
 def lastgov(update, context):
     notices = get_gov_notices()
@@ -159,16 +149,8 @@ def lastgov(update, context):
         update.message.reply_text("No GOV notices found")
         return
     for n in notices:
-        text = get_notice_text(n["link"])
-        text = add_coordinate_links(text)
-        msg = f"""⚓ <a href="{n['link']}">{n['number']}</a>
-
-Subject:
-{n['subject']}
-
-{text}
-"""
-        update.message.reply_text(msg[:4000], parse_mode="HTML", disable_web_page_preview=True)
+        msg = f"Новое сообщение: ⚓ <a href='{n['link']}'>{n['number']}</a>"
+        update.message.reply_text(msg, parse_mode="HTML")
 
 # ---------------- TEST ----------------
 
