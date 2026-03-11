@@ -26,31 +26,46 @@ def convert_to_decimal(deg, minutes, direction):
 
 def add_coordinate_links(text):
 
-    pattern = re.compile(r'(\d{1,3})\s+(\d{1,2}\.\d+)\s*([NS])')
+    coord_pattern = re.compile(
+        r'(\d{1,3})[°\-\s]+(\d{1,2}\.\d+)\s*([NSEW])',
+        re.IGNORECASE
+    )
 
-    coords = list(pattern.finditer(text))
+    coords = list(coord_pattern.finditer(text))
 
-    for i in range(0,len(coords)-1,2):
+    replacements = []
+
+    i = 0
+
+    while i < len(coords) - 1:
 
         lat = coords[i]
         lon = coords[i+1]
 
-        lat_val = convert_to_decimal(lat.group(1),lat.group(2),lat.group(3))
+        if lat.group(3).upper() in ["N","S"] and lon.group(3).upper() in ["E","W"]:
 
-        lon_pattern = re.search(r'(\d{1,3})\s+(\d{1,2}\.\d+)\s*([EW])', text[lon.start():])
+            lat_val = convert_to_decimal(lat.group(1), lat.group(2), lat.group(3).upper())
+            lon_val = convert_to_decimal(lon.group(1), lon.group(2), lon.group(3).upper())
 
-        if not lon_pattern:
-            continue
+            start = lat.start()
+            end = lon.end()
 
-        lon_val = convert_to_decimal(lon_pattern.group(1),lon_pattern.group(2),lon_pattern.group(3))
+            original = text[start:end]
 
-        link = f"https://maps.google.com/?q={lat_val},{lon_val}"
+            link = f"https://maps.google.com/?q={lat_val},{lon_val}"
 
-        original = text[lat.start():lon.end()]
+            html = f'<a href="{link}">{original}</a>'
 
-        html = f'<a href="{link}">{original}</a>'
+            replacements.append((start,end,html))
 
-        text = text.replace(original,html)
+            i += 2
+
+        else:
+            i += 1
+
+    for start,end,html in reversed(replacements):
+
+        text = text[:start] + html + text[end:]
 
     return text
 
@@ -59,37 +74,72 @@ def add_coordinate_links(text):
 
 def fetch_navtex():
 
-    r = requests.get(SEALAGOM_URL,timeout=20)
+    try:
 
-    soup = BeautifulSoup(r.text,"html.parser")
+        r = requests.get(SEALAGOM_URL, timeout=20)
 
-    text = soup.get_text("\n")
+        soup = BeautifulSoup(r.text, "html.parser")
 
-    raw = re.split(r"\n(?=\d{4}/\d{2})",text)
+        text = soup.get_text("\n")
 
-    messages=[]
+        text = re.sub(r'\n+', '\n', text)
 
-    for m in raw:
+        blocks = re.split(r'(?=\d{4}/\d{2})', text)
 
-        date_match = re.search(r"\d{1,2}\s+[A-Za-z]+\s+\d{4}",m)
+        messages = []
 
-        if not date_match:
-            continue
+        for block in blocks:
 
-        messages.append(m.strip())
+            if len(block) < 50:
+                continue
 
-    return messages[:5]
+            date_match = re.search(r'\d{1,2}\s+[A-Za-z]+\s+\d{4}', block)
+
+            if not date_match:
+                continue
+
+            clean = block.strip()
+
+            clean = re.split(r'Details|NAVAREA|Share', clean)[0]
+
+            if len(clean) > 40:
+                messages.append(clean)
+
+        return messages[:5]
+
+    except Exception as e:
+
+        print("NAVTEX error:", e)
+
+        return []
 
 
 def last(update,context):
 
     msgs = fetch_navtex()
 
+    if not msgs:
+
+        update.message.reply_text("No NAVTEX messages found")
+
+        return
+
+    sent=set()
+
     for m in msgs:
 
-        msg = add_coordinate_links(m)
+        if m in sent:
+            continue
 
-        update.message.reply_text(msg,parse_mode="HTML",disable_web_page_preview=True)
+        sent.add(m)
+
+        msg = add_coordinate_links(m[:3500])
+
+        update.message.reply_text(
+            msg,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
 
 
 # ---------------- METAREA ----------------
@@ -166,47 +216,69 @@ def get_notice_text(url):
 
 def get_gov_notices():
 
-    headers = {
-        "User-Agent":"Mozilla/5.0",
-        "Accept":"application/json"
-    }
+    try:
 
-    r = requests.get(GOV_API,headers=headers,timeout=20)
+        headers = {
+            "User-Agent":"Mozilla/5.0",
+            "Accept":"application/json"
+        }
 
-    data = r.json()
+        r = requests.get(GOV_API,headers=headers,timeout=20)
 
-    notices=[]
+        data = r.json()
 
-    for item in data["Results"][:5]:
+        notices=[]
 
-        d = item["Data"]
+        results = data.get("Results",[])
 
-        number = d.get("number","")
-        subject = d.get("sunject","")
+        for item in results[:5]:
 
-        valid = d.get("valid","")
-        until = d.get("date","")
+            d = item.get("Data",{})
 
-        link = "https://www.gov.il" + d["link_to_notice"]["URL"]
+            number = d.get("number","")
 
-        notices.append({
-            "number":number,
-            "subject":subject,
-            "valid":valid,
-            "until":until,
-            "link":link
-        })
+            subject = d.get("subject","")
 
-    return notices
+            valid = d.get("valid","")
+
+            until = d.get("date","")
+
+            link_data = d.get("link_to_notice",{})
+
+            link = "https://www.gov.il" + link_data.get("URL","")
+
+            notices.append({
+                "number":number,
+                "subject":subject,
+                "valid":valid,
+                "until":until,
+                "link":link
+            })
+
+        return notices
+
+    except Exception as e:
+
+        print("GOV error:",e)
+
+        return []
 
 
 def lastgov(update,context):
 
     notices = get_gov_notices()
 
+    if not notices:
+
+        update.message.reply_text("No GOV notices found")
+
+        return
+
     for n in notices:
 
         text = get_notice_text(n["link"])
+
+        text = add_coordinate_links(text)
 
         msg = f"""⚓ <a href="{n['link']}">{n['number']}</a>
 
@@ -219,7 +291,11 @@ Valid:
 {text}
 """
 
-        update.message.reply_text(msg,parse_mode="HTML")
+        update.message.reply_text(
+            msg[:4000],
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
 
 
 # ---------------- TEST ----------------
