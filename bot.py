@@ -114,13 +114,9 @@ def metarea(update,context):
     update.message.reply_text(get_metarea())
 
 # ---------------- GOV ----------------
-# только блок /lastgov переписан
+# пока что только одна страница для теста: 019_2026
 GOV_NTM_URLS = [
-    "https://www.gov.il/en/pages/mariners-011-2026",
-    "https://www.gov.il/en/pages/mariners-010-2026",
-    "https://www.gov.il/en/pages/mariners-009-2026",
-    "https://www.gov.il/en/pages/mariners-008-2026",
-    "https://www.gov.il/en/pages/mariners-007-2026",
+    "https://www.gov.il/en/pages/mariners_019_2026"
 ]
 
 def get_gov_notices():
@@ -128,20 +124,27 @@ def get_gov_notices():
     for url in GOV_NTM_URLS:
         try:
             r = requests.get(url, timeout=15)
-            soup = BeautifulSoup(r.text, "html.parser")
-            h1 = soup.find("h1")
-            if not h1:
+            if r.status_code != 200:
                 continue
-            title_text = h1.get_text().strip()
-            if "NOTICE TO MARINER" in title_text.upper():
-                notices.append({
-                    "number": title_text,
-                    "link": url
-                })
+            soup = BeautifulSoup(r.text, "html.parser")
+            
+            # Заголовок NtM
+            h1 = soup.find("h1")
+            number = h1.get_text().strip() if h1 else "No number"
+
+            # Основной текст
+            content_div = soup.find("div", {"id": "content"})
+            text = content_div.get_text("\n").strip()[:3500] if content_div else ""
+            
+            notices.append({
+                "number": number,
+                "link": url,
+                "text": text
+            })
         except Exception as e:
             print("GOV page error:", e)
             continue
-    return notices[:5]
+    return notices
 
 def lastgov(update, context):
     notices = get_gov_notices()
@@ -149,7 +152,7 @@ def lastgov(update, context):
         update.message.reply_text("No GOV notices found")
         return
     for n in notices:
-        msg = f"Новое сообщение: ⚓ <a href='{n['link']}'>{n['number']}</a>"
+        msg = f"Новое сообщение: ⚓ <a href='{n['link']}'>{n['number']}</a>\n\n{n['text']}"
         update.message.reply_text(msg, parse_mode="HTML")
 
 # ---------------- TEST ----------------
