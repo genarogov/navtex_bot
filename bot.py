@@ -9,13 +9,11 @@ from telegram.ext import Updater, CommandHandler
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
 CACHE_FILE = "cache.json"
 CHECK_INTERVAL = 1800  # 30 минут
 
 SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-GOV_NTM_URLS = ["https://www.gov.il/en/pages/mariners_019_2026"]
 RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 
 ZONES = ["TAURUS","DELTA","CRUSADE"]
@@ -23,7 +21,11 @@ ZONES = ["TAURUS","DELTA","CRUSADE"]
 # ---------------- CACHE ----------------
 def load_cache():
     if not os.path.exists(CACHE_FILE):
-        return {"sealagom": [], "gov": {"last_number": "019", "year": "2026"}, "rss": []}
+        return {
+            "sealagom": [],
+            "gov": {"last_number": "019", "year": "2026", "last_format": "_"},
+            "rss": []
+        }
     with open(CACHE_FILE) as f:
         return json.load(f)
 
@@ -109,42 +111,64 @@ def test(update, context):
         update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
 
 # ---------------- GOV IL ----------------
-def get_gov_notices():
-    notices = []
-    for url in GOV_NTM_URLS:
-        try:
-            r = requests.get(url, timeout=15)
-            if r.status_code != 200:
-                continue
-            soup = BeautifulSoup(r.text, "html.parser")
-            h1 = soup.find("h1")
-            number = h1.get_text().strip() if h1 else "No number"
-            notices.append({"number": number, "link": url})
-        except Exception as e:
-            print("GOV fetch error:", e)
-    return notices
+def generate_next_gov_url(last_number, year, fmt):
+    # Поддержка двух форматов: "_" и "-"
+    num = int(last_number)
+    num += 1
+    num_str = f"{num:03d}"
+    url = f"https://www.gov.il/en/pages/mariners{fmt}{num_str}{fmt}{year}"
+    return url, num_str
 
 def send_gov(updater):
-    notices = get_gov_notices()
     last_number = cache["gov"]["last_number"]
     year = cache["gov"]["year"]
-    for n in notices:
-        # Простейшая проверка нового номера
-        if last_number not in n["number"]:
-            msg = f"Новое сообщение: ⚓ <a href='{n['link']}'>{n['number']}</a>"
-            updater.bot.send_message(CHAT_ID, msg, parse_mode="HTML")
-            # Обновляем кэш
-            cache["gov"]["last_number"] = n["number"].split()[-1]
-            save_cache(cache)
+    fmt = cache["gov"]["last_format"]
+    while True:
+        url, next_number = generate_next_gov_url(last_number, year, fmt)
+        try:
+            r = requests.get(url, timeout=15)
+            if r.status_code == 200:
+                msg = f"Новое сообщение GOV.il: {url}"
+                updater.bot.send_message(CHAT_ID, msg)
+                cache["gov"]["last_number"] = next_number
+                save_cache(cache)
+                last_number = next_number
+                continue  # проверить следующий номер
+            else:
+                # Если 404 → пробуем другой формат
+                alt_fmt = "-" if fmt == "_" else "_"
+                url_alt, next_number_alt = generate_next_gov_url(last_number, year, alt_fmt)
+                r_alt = requests.get(url_alt, timeout=15)
+                if r_alt.status_code == 200:
+                    msg = f"Новое сообщение GOV.il: {url_alt}"
+                    updater.bot.send_message(CHAT_ID, msg)
+                    cache["gov"]["last_number"] = next_number_alt
+                    cache["gov"]["last_format"] = alt_fmt
+                    save_cache(cache)
+                    last_number = next_number_alt
+                    fmt = alt_fmt
+                    continue
+                # Если нет новых сообщений → проверяем переход года
+                next_year = str(int(year)+1)
+                url_new_year, num_new_year = generate_next_gov_url("001", next_year, fmt)
+                r_new = requests.get(url_new_year, timeout=15)
+                if r_new.status_code == 200:
+                    msg = f"Новое сообщение GOV.il: {url_new_year}"
+                    updater.bot.send_message(CHAT_ID, msg)
+                    cache["gov"]["last_number"] = "001"
+                    cache["gov"]["year"] = next_year
+                    save_cache(cache)
+                break
+        except Exception as e:
+            print("GOV auto check error:", e)
+            break
 
 def testgov(update, context):
-    notices = get_gov_notices()
-    if not notices:
-        update.message.reply_text("No GOV notices found")
-        return
-    for n in notices:
-        msg = f"Новое сообщение: ⚓ <a href='{n['link']}'>{n['number']}</a>"
-        update.message.reply_text(msg, parse_mode="HTML")
+    last_number = cache["gov"]["last_number"]
+    year = cache["gov"]["year"]
+    fmt = cache["gov"]["last_format"]
+    url, _ = generate_next_gov_url(str(int(last_number)-1), year, fmt)  # для теста предыдущий
+    update.message.reply_text(f"Ссылка GOV.il для проверки: {url}")
 
 # ---------------- METAREA ----------------
 def get_metarea():
