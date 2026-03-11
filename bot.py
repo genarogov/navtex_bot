@@ -6,9 +6,9 @@ from telegram.ext import Updater, CommandHandler
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-GOV_API = "https://www.gov.il/en/api/DynamicCollector"
 SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
+GOV_URL = "https://www.gov.il/en/departments/publications/reports/notices_to_mariners"
 
 ZONES = ["TAURUS","DELTA","CRUSADE"]
 
@@ -214,40 +214,57 @@ def get_notice_text(url):
 
 def get_gov_notices():
 
-    headers = {
-        "User-Agent":"Mozilla/5.0",
-        "Accept":"application/json"
-    }
+    try:
 
-    r = requests.get(GOV_API,headers=headers,timeout=20)
+        r = requests.get(GOV_URL, timeout=20)
 
-    data = r.json()
+        soup = BeautifulSoup(r.text, "html.parser")
 
-    notices=[]
+        notices = []
 
-    for item in data["Results"][:5]:
+        links = soup.find_all("a", href=True)
 
-        d = item.get("Data",{})
+        for a in links:
 
-        number = d.get("number","")
+            href = a["href"]
 
-        subject = d.get("subject","")
+            if "ntm_" not in href:
+                continue
 
-        valid = d.get("valid","")
+            title = a.get_text(strip=True)
 
-        until = d.get("date","")
+            link = "https://www.gov.il" + href
 
-        link = "https://www.gov.il" + d["link_to_notice"]["URL"]
+            number_match = re.search(r"ntm_(\d+)", href)
 
-        notices.append({
-            "number":number,
-            "subject":subject,
-            "valid":valid,
-            "until":until,
-            "link":link
-        })
+            number = number_match.group(1) if number_match else ""
 
-    return notices
+            notices.append({
+                "number": number,
+                "subject": title,
+                "valid": "",
+                "until": "",
+                "link": link
+            })
+
+        unique = []
+        seen = set()
+
+        for n in notices:
+
+            if n["link"] in seen:
+                continue
+
+            seen.add(n["link"])
+            unique.append(n)
+
+        return unique[:5]
+
+    except Exception as e:
+
+        print("GOV error:", e)
+
+        return []
 
 
 def lastgov(update,context):
@@ -270,9 +287,6 @@ def lastgov(update,context):
 
 Subject:
 {n['subject']}
-
-Valid:
-{n['valid']} - {n['until']}
 
 {text}
 """
