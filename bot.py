@@ -8,6 +8,8 @@ import tempfile
 from datetime import datetime, date
 from email.header import decode_header
 
+import requests
+from bs4 import BeautifulSoup
 from telegram.ext import Updater, CommandHandler
 from docx import Document
 
@@ -19,7 +21,17 @@ EMAIL_PASS = os.getenv("EMAIL_PASS")
 
 # ---------------- CACHE ----------------
 CACHE_FILE = "cache.json"
-CHECK_INTERVAL = 1800
+CHECK_INTERVAL = 1800  # 30 min
+TAIL_SCAN_LIMIT = 40
+
+# ---------------- GMAIL FILTERS ----------------
+SENDER_KEYWORD = "mot.gov.il"
+SUBJECT_KEYWORD = "notice to mariner"
+
+# ---------------- METAREA ----------------
+METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
+ZONES = ["TAURUS", "DELTA", "CRUSADE"]
+
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
@@ -39,16 +51,14 @@ def load_cache():
     except Exception:
         return {"gmail": [], "gmail_initialized": False}
 
+
 def save_cache(data):
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 cache = load_cache()
 
-# ---------------- GMAIL SETTINGS ----------------
-SENDER_KEYWORD = "mot.gov.il"
-SUBJECT_KEYWORD = "notice to mariner"
-TAIL_SCAN_LIMIT = 40
 
 # ---------------- HELPERS ----------------
 def decode_mime_words(value):
@@ -64,20 +74,25 @@ def decode_mime_words(value):
 
     return "".join(decoded).strip()
 
+
 def normalize_message_id(msg):
     raw = (msg.get("Message-ID") or "").strip()
     return raw.strip("<>").strip().lower()
 
+
 def html_escape(text):
     return (
-        str(text)
+        str(text or "")
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
 
+
 def split_html_message(text, limit=3500):
     parts = []
+    text = text or ""
+
     while text:
         if len(text) <= limit:
             parts.append(text)
@@ -90,7 +105,8 @@ def split_html_message(text, limit=3500):
         parts.append(text[:cut])
         text = text[cut:].lstrip()
 
-    return parts
+    return parts or [""]
+
 
 # ---------------- COORDINATES ----------------
 def dms_to_decimal(deg, minutes, seconds, direction):
@@ -99,17 +115,20 @@ def dms_to_decimal(deg, minutes, seconds, direction):
         value = -value
     return value
 
+
 def dm_to_decimal(deg, minutes, direction):
     value = float(deg) + float(minutes) / 60
     if direction.upper() in ["S", "W"]:
         value = -value
     return value
 
+
 def decimal_signed(value, direction):
     value = float(value)
     if direction.upper() in ["S", "W"]:
         return -abs(value)
     return abs(value)
+
 
 def replace_coordinates(text, pattern, parser):
     matches = list(pattern.finditer(text))
@@ -129,6 +148,7 @@ def replace_coordinates(text, pattern, parser):
         text = text[:start] + html + text[end:]
 
     return text
+
 
 def add_coordinate_links(text):
     safe = html_escape(text or "")
@@ -154,7 +174,7 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_dms, parse_dms)
 
-    # 2) DM
+    # 2) DM: 32 15.4 N 034 55.1 E / 32-15.4N 034-55.1E
     pattern_dm = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
@@ -173,7 +193,7 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_dm, parse_dm)
 
-    # 3) Compact DM
+    # 3) Compact DM: 3215.4N 03455.1E
     pattern_compact_dm = re.compile(
         r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lat_dir>[NS])'
@@ -185,7 +205,7 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_compact_dm, parse_dm)
 
-    # 4) Decimal
+    # 4) Decimal: 32.256N 34.817E
     pattern_decimal = re.compile(
         r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lat_dir>[NS])'
@@ -204,6 +224,7 @@ def add_coordinate_links(text):
 
     return safe
 
+
 # ---------------- VALID STATUS ----------------
 def get_status_icon(valid):
     if not valid or valid == "N/A":
@@ -217,6 +238,7 @@ def get_status_icon(valid):
             pass
 
     return "✅"
+
 
 # ---------------- DOCX ----------------
 def read_docx(file_bytes):
@@ -236,13 +258,16 @@ def read_docx(file_bytes):
         for row in table.rows:
             row_cells = []
             for cell in row.cells:
-                cell_text = " ".join(p.text.strip() for p in cell.paragraphs if p.text.strip()).strip()
+                cell_text = " ".join(
+                    p.text.strip() for p in cell.paragraphs if p.text.strip()
+                ).strip()
                 if cell_text:
                     row_cells.append(cell_text)
             if row_cells:
                 lines.append(" | ".join(row_cells))
 
     return "\n".join(lines)
+
 
 def extract_notice(doc_text):
     notice = "N/A"
@@ -299,6 +324,7 @@ def extract_notice(doc_text):
         "body": "\n".join(body).strip() or "N/A"
     }
 
+
 def build_message(payload):
     icon = get_status_icon(payload["valid"])
     body = add_coordinate_links(payload["body"])
@@ -310,12 +336,62 @@ def build_message(payload):
         f"{body}"
     )
 
+
+# ---------------- METAREA ----------------
+def get_metarea():
+    try:
+        r = requests.get(METAREA_URL, timeout=20)
+        r.raise_for_status()
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text()
+
+        issued = re.search(r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC", text)
+        issued = issued.group(0) if issued else "N/A"
+
+        start = text.find("TAURUS")
+        end = text.find("KASTELLORIZO SEA")
+
+        if start == -1:
+            return f"🕒 Issued: {issued}\n\nMETAREA text not found."
+
+        forecast = text[start:end] if end != -1 else text[start:]
+
+        blocks = []
+
+        for i, zone in enumerate(ZONES):
+            s = forecast.find(zone)
+
+            if s == -1:
+                continue
+
+            nxt = [forecast.find(z, s + 1) for z in ZONES[i + 1:]]
+            nxt = [n for n in nxt if n != -1]
+
+            e = min(nxt) if nxt else len(forecast)
+
+            txt = forecast[s:e].strip()
+
+            if txt.startswith(zone):
+                txt = txt[len(zone):].lstrip()
+
+            blocks.append(f"📍 {zone}\n{txt}")
+
+        msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
+        return msg[:4000]
+
+    except Exception as e:
+        print("METAREA error:", e)
+        return "METAREA fetch error"
+
+
 # ---------------- GMAIL ----------------
 def connect_gmail():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
     mail.select("inbox")
     return mail
+
 
 def message_matches(msg):
     from_header = decode_mime_words(msg.get("From", ""))
@@ -337,6 +413,7 @@ def message_matches(msg):
         "from": from_header,
         "subject": subject
     }
+
 
 def fetch_latest_matching_email():
     mail = connect_gmail()
@@ -371,6 +448,7 @@ def fetch_latest_matching_email():
     mail.logout()
     return None
 
+
 def fetch_recent_matching_emails():
     mail = connect_gmail()
     result, data = mail.search(None, "ALL")
@@ -404,6 +482,7 @@ def fetch_recent_matching_emails():
     mail.logout()
     return messages
 
+
 def extract_docx(msg):
     for part in msg.walk():
         filename = part.get_filename()
@@ -420,6 +499,7 @@ def extract_docx(msg):
                 return file_bytes
 
     return None
+
 
 def process_entry(bot, chat_id, entry):
     msg = entry["msg"]
@@ -443,6 +523,7 @@ def process_entry(bot, chat_id, entry):
 
     return True
 
+
 # ---------------- AUTO CHECK ----------------
 def initialize_gmail_cache_silently():
     if cache.get("gmail_initialized"):
@@ -454,6 +535,7 @@ def initialize_gmail_cache_silently():
 
     cache["gmail_initialized"] = True
     save_cache(cache)
+
 
 def auto_check(updater):
     try:
@@ -473,6 +555,7 @@ def auto_check(updater):
     except Exception as e:
         print("Gmail error:", e)
 
+
 # ---------------- COMMANDS ----------------
 def checkgovil(update, context):
     latest = fetch_latest_matching_email()
@@ -483,14 +566,21 @@ def checkgovil(update, context):
 
     process_entry(context.bot, update.message.chat.id, latest)
 
+
 def testbot(update, context):
     update.message.reply_text("Bot running")
+
 
 def clearcache(update, context):
     cache["gmail"] = []
     cache["gmail_initialized"] = False
     save_cache(cache)
     update.message.reply_text("Cache cleared")
+
+
+def metarea(update, context):
+    update.message.reply_text(get_metarea())
+
 
 # ---------------- MAIN ----------------
 def main():
@@ -500,6 +590,7 @@ def main():
     dp.add_handler(CommandHandler("checkgovil", checkgovil))
     dp.add_handler(CommandHandler("testbot", testbot))
     dp.add_handler(CommandHandler("clearcache", clearcache))
+    dp.add_handler(CommandHandler("metarea", metarea))
 
     updater.start_polling()
     print("BOT STARTED")
@@ -507,6 +598,7 @@ def main():
     while True:
         auto_check(updater)
         time.sleep(CHECK_INTERVAL)
+
 
 if __name__ == "__main__":
     main()
