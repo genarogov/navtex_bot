@@ -388,11 +388,12 @@ def get_metarea():
         if not blocks:
             return f"🕒 Issued: {issued}\n\nMETAREA text not found."
 
-        return f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
+        msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
+        return msg[:4000]
 
     except Exception as e:
         print("METAREA error:", e)
-        return "METAREA fetch error"
+        return f"METAREA fetch error: {e}"
 
 
 # ---------------- GMAIL ----------------
@@ -589,7 +590,9 @@ def clearcache(update, context):
 
 
 def metarea(update, context):
-    update.message.reply_text(get_metarea())
+    msg = get_metarea()
+    for chunk in split_html_message(msg, limit=4000):
+        update.message.reply_text(chunk)
 
 
 # ---------------- MAIN ----------------
