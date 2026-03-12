@@ -30,7 +30,6 @@ SUBJECT_KEYWORD = "notice to mariner"
 
 # ---------------- METAREA ----------------
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-ZONES = ["TAURUS", "DELTA", "CRUSADE"]
 
 
 def load_cache():
@@ -338,51 +337,69 @@ def build_message(payload):
 
 
 # ---------------- METAREA ----------------
+def fetch_metarea_text():
+    r = requests.get(METAREA_URL, timeout=20)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    text = soup.get_text("\n")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return "\n".join(lines)
+
+
+def extract_between(text, start_marker, end_marker=None):
+    start = text.find(start_marker)
+    if start == -1:
+        return ""
+
+    start += len(start_marker)
+
+    if end_marker:
+        end = text.find(end_marker, start)
+        if end == -1:
+            end = len(text)
+    else:
+        end = len(text)
+
+    block = text[start:end].strip()
+    block = re.sub(r"\.\s*", ".\n", block)
+    return block.strip()
+
+
 def get_metarea():
     try:
-        r = requests.get(METAREA_URL, timeout=20)
-        r.raise_for_status()
+        clean = fetch_metarea_text()
 
-        soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text()
+        issued_match = re.search(
+            r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC",
+            clean,
+            re.I
+        )
+        issued = issued_match.group(0) if issued_match else "N/A"
 
-        issued = re.search(r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC", text)
-        issued = issued.group(0) if issued else "N/A"
-
-        start = text.find("TAURUS")
-        end = text.find("KASTELLORIZO SEA")
-
-        if start == -1:
-            return f"🕒 Issued: {issued}\n\nMETAREA text not found."
-
-        forecast = text[start:end] if end != -1 else text[start:]
+        taurus = extract_between(clean, "TAURUS", "DELTA")
+        delta = extract_between(clean, "DELTA", "CRUSADE")
+        crusade = extract_between(clean, "CRUSADE", "KASTELLORIZO SEA")
 
         blocks = []
 
-        for i, zone in enumerate(ZONES):
-            s = forecast.find(zone)
+        if taurus:
+            blocks.append(f"📍 TAURUS\n{taurus}")
 
-            if s == -1:
-                continue
+        if delta:
+            blocks.append(f"📍 DELTA\n{delta}")
 
-            nxt = [forecast.find(z, s + 1) for z in ZONES[i + 1:]]
-            nxt = [n for n in nxt if n != -1]
+        if crusade:
+            blocks.append(f"📍 CRUSADE\n{crusade}")
 
-            e = min(nxt) if nxt else len(forecast)
-
-            txt = forecast[s:e].strip()
-
-            if txt.startswith(zone):
-                txt = txt[len(zone):].lstrip()
-
-            blocks.append(f"📍 {zone}\n{txt}")
+        if not blocks:
+            return f"🕒 Issued: {issued}\n\nMETAREA text not found."
 
         msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
         return msg[:4000]
 
     except Exception as e:
         print("METAREA error:", e)
-        return "METAREA fetch error"
+        return f"METAREA error: {e}"
 
 
 # ---------------- GMAIL ----------------
@@ -579,7 +596,9 @@ def clearcache(update, context):
 
 
 def metarea(update, context):
-    update.message.reply_text(get_metarea())
+    msg = get_metarea()
+    for chunk in split_html_message(msg, limit=4000):
+        update.message.reply_text(chunk)
 
 
 # ---------------- MAIN ----------------
