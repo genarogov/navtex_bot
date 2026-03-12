@@ -5,12 +5,10 @@ import json
 import imaplib
 import email
 import tempfile
-import textwrap
 from email.header import decode_header
 
 from telegram.ext import Updater, CommandHandler
 from docx import Document
-from PIL import Image, ImageDraw, ImageFont
 
 # ---------------- ENV ----------------
 TOKEN = os.getenv("BOT_TOKEN")
@@ -21,6 +19,7 @@ EMAIL_PASS = os.getenv("EMAIL_PASS")
 # ---------------- CACHE ----------------
 CACHE_FILE = "cache.json"
 CHECK_INTERVAL = 1800  # 30 min
+
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
@@ -46,9 +45,11 @@ def load_cache():
             "gmail_initialized": False
         }
 
+
 def save_cache(data):
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 cache = load_cache()
 
@@ -67,6 +68,7 @@ def html_escape(text):
         .replace(">", "&gt;")
     )
 
+
 def decode_mime_words(value):
     if not value:
         return ""
@@ -80,9 +82,11 @@ def decode_mime_words(value):
 
     return "".join(decoded_parts).strip()
 
+
 def normalize_message_id(msg):
     raw = (msg.get("Message-ID") or "").strip()
     return raw.strip("<>").strip().lower()
+
 
 def split_html_message(text, limit=3500):
     parts = []
@@ -100,6 +104,7 @@ def split_html_message(text, limit=3500):
 
     return parts
 
+
 # ---------------- COORDINATES ----------------
 def dms_to_decimal(deg, minutes, seconds, direction):
     value = float(deg) + float(minutes) / 60.0 + float(seconds) / 3600.0
@@ -107,17 +112,20 @@ def dms_to_decimal(deg, minutes, seconds, direction):
         value = -value
     return value
 
+
 def dm_to_decimal(deg, minutes, direction):
     value = float(deg) + float(minutes) / 60.0
     if direction.upper() in ("S", "W"):
         value = -value
     return value
 
+
 def decimal_signed(value, direction):
     val = float(value)
     if direction.upper() in ("S", "W"):
         return -abs(val)
     return abs(val)
+
 
 def replace_coordinate_pairs(text, pattern, parser):
     matches = list(pattern.finditer(text))
@@ -137,6 +145,7 @@ def replace_coordinate_pairs(text, pattern, parser):
         text = text[:start] + repl + text[end:]
 
     return text
+
 
 def add_coordinate_links(text):
     if not text:
@@ -242,6 +251,7 @@ def add_coordinate_links(text):
 
     return safe
 
+
 # ---------------- DOCX ----------------
 def read_docx_text_from_bytes(file_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
@@ -270,55 +280,55 @@ def read_docx_text_from_bytes(file_bytes):
 
     return "\n".join(lines).strip(), tmp_path
 
-def find_field(text, labels):
-    for label in labels:
-        pattern = re.compile(rf'(?im)^\s*{label}\s*[:\-]?\s*(.+?)\s*$')
-        m = pattern.search(text)
-        if m:
-            return m.group(1).strip()
-    return ""
 
 def extract_notice_payload(doc_text):
-    notice_no = find_field(doc_text, [
-        r'Notice\s+to\s+mariner(?:s)?\s*No',
-        r'Notice\s*No',
-        r'Notice\s+number'
-    ])
+    notice_no = "N/A"
+    start = "N/A"
+    valid = "N/A"
 
-    start = find_field(doc_text, [
-        r'Start',
-        r'From'
-    ])
+    m = re.search(r'No\.\s*(\d+\s*/\s*\d+)', doc_text, re.IGNORECASE)
+    if m:
+        notice_no = m.group(1).strip()
 
-    valid = find_field(doc_text, [
-        r'Valid',
-        r'Until',
-        r'Valid\s+until'
-    ])
+    m = re.search(
+        r'Start[:\s]*([\d/]+).*?VALID[:\s]*([\d/]+)',
+        doc_text,
+        re.IGNORECASE | re.DOTALL
+    )
+    if m:
+        start = m.group(1).strip()
+        valid = m.group(2).strip()
+    else:
+        m_start = re.search(r'Start[:\s]*([\d/]+)', doc_text, re.IGNORECASE)
+        if m_start:
+            start = m_start.group(1).strip()
+
+        m_valid = re.search(r'Valid[:\s]*([\d/]+)', doc_text, re.IGNORECASE)
+        if m_valid:
+            valid = m_valid.group(1).strip()
 
     body_lines = []
+    skip_next_no = False
+
     for line in doc_text.splitlines():
         line_clean = line.strip()
         if not line_clean:
             continue
 
-        lower = line_clean.lower()
+        compact = re.sub(r'\s+', '', line_clean).lower()
 
-        if re.match(r'^notice\s+to\s+mariner(?:s)?\s*no\s*[:\-]?', lower):
+        if "notice" in compact and "mariner" in compact:
+            skip_next_no = True
             continue
-        if re.match(r'^notice\s*no\s*[:\-]?', lower):
+
+        if skip_next_no and re.match(r'^no\.\s*\d+\s*/\s*\d+', line_clean, re.IGNORECASE):
+            skip_next_no = False
             continue
-        if re.match(r'^notice\s+number\s*[:\-]?', lower):
+
+        if re.match(r'^start[:\s]', line_clean, re.IGNORECASE):
             continue
-        if re.match(r'^start\s*[:\-]?', lower):
-            continue
-        if re.match(r'^from\s*[:\-]?', lower):
-            continue
-        if re.match(r'^valid\s*[:\-]?', lower):
-            continue
-        if re.match(r'^until\s*[:\-]?', lower):
-            continue
-        if re.match(r'^valid\s+until\s*[:\-]?', lower):
+
+        if "valid" in line_clean.lower() and re.search(r'\d{2}/\d{2}/\d{4}', line_clean):
             continue
 
         body_lines.append(line_clean)
@@ -326,55 +336,12 @@ def extract_notice_payload(doc_text):
     body = "\n".join(body_lines).strip()
 
     return {
-        "notice_no": notice_no or "N/A",
-        "start": start or "N/A",
-        "valid": valid or "N/A",
-        "body": body or "N/A"
+        "notice_no": notice_no,
+        "start": start,
+        "valid": valid,
+        "body": body if body else "N/A"
     }
 
-def render_text_image(payload):
-    text = (
-        f"Notice to mariner No: {payload['notice_no']}\n"
-        f"Start: {payload['start']}\n"
-        f"Valid: {payload['valid']}\n\n"
-        f"{payload['body']}"
-    )
-
-    wrapped_lines = []
-    for block in text.split("\n"):
-        if not block.strip():
-            wrapped_lines.append("")
-            continue
-        wrapped_lines.extend(textwrap.wrap(block, width=55) or [""])
-
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
-        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
-    except Exception:
-        font = ImageFont.load_default()
-        title_font = ImageFont.load_default()
-
-    line_height = 36
-    top_pad = 40
-    bottom_pad = 40
-    width = 1400
-    height = max(900, top_pad + bottom_pad + (len(wrapped_lines) + 2) * line_height)
-
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
-
-    y = 30
-    draw.text((40, y), "Notice to mariner", fill="black", font=title_font)
-    y += 55
-
-    for line in wrapped_lines:
-        draw.text((40, y), line, fill="black", font=font)
-        y += line_height
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-    image.save(tmp.name, "PNG")
-    tmp.close()
-    return tmp.name
 
 def build_html_message(payload):
     notice_no = html_escape(payload["notice_no"])
@@ -389,12 +356,14 @@ def build_html_message(payload):
         f"{body}"
     )
 
+
 # ---------------- GMAIL CORE ----------------
 def connect_gmail():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
     mail.select("inbox")
     return mail
+
 
 def fetch_recent_matching_emails(limit=100):
     mail = connect_gmail()
@@ -446,6 +415,7 @@ def fetch_recent_matching_emails(limit=100):
     mail.logout()
     return matched
 
+
 def extract_docx_attachment_bytes(msg):
     for part in msg.walk():
         content_disposition = str(part.get("Content-Disposition", "")).lower()
@@ -465,18 +435,16 @@ def extract_docx_attachment_bytes(msg):
 
     return None, None
 
+
 def get_latest_matching_email():
     matched = fetch_recent_matching_emails(limit=150)
     if not matched:
         return None
     return matched[0]
 
-def send_notice_to_chat(bot, chat_id, payload, image_path=None):
-    html_msg = build_html_message(payload)
 
-    if image_path and os.path.exists(image_path):
-        with open(image_path, "rb") as img:
-            bot.send_photo(chat_id=chat_id, photo=img)
+def send_notice_to_chat(bot, chat_id, payload):
+    html_msg = build_html_message(payload)
 
     for chunk in split_html_message(html_msg):
         bot.send_message(
@@ -485,6 +453,7 @@ def send_notice_to_chat(bot, chat_id, payload, image_path=None):
             parse_mode="HTML",
             disable_web_page_preview=True
         )
+
 
 def process_message_entry(bot, chat_id, entry):
     msg = entry["msg"]
@@ -496,10 +465,9 @@ def process_message_entry(bot, chat_id, entry):
 
     doc_text, _tmp_docx_path = read_docx_text_from_bytes(file_bytes)
     payload = extract_notice_payload(doc_text)
-    image_path = render_text_image(payload)
-
-    send_notice_to_chat(bot, chat_id, payload, image_path=image_path)
+    send_notice_to_chat(bot, chat_id, payload)
     return True
+
 
 def initialize_gmail_cache_silently():
     if cache.get("gmail_initialized"):
@@ -511,6 +479,7 @@ def initialize_gmail_cache_silently():
 
     cache["gmail_initialized"] = True
     save_cache(cache)
+
 
 def auto_check_gmail(updater):
     try:
@@ -543,18 +512,22 @@ def auto_check_gmail(updater):
     except Exception as e:
         print("Gmail auto-check error:", e)
 
+
 # ---------------- COMMANDS ----------------
 def testbot(update, context):
     update.message.reply_text("✅ Bot running")
 
+
 def get_chat_id_cmd(update, context):
     update.message.reply_text(f"Chat ID: {update.message.chat.id}")
+
 
 def clearcache(update, context):
     cache["gmail"] = []
     cache["gmail_initialized"] = False
     save_cache(cache)
     update.message.reply_text("✅ Gmail cache cleared")
+
 
 def checkgovil(update, context):
     try:
@@ -570,6 +543,7 @@ def checkgovil(update, context):
     except Exception as e:
         print("checkgovil error:", e)
         update.message.reply_text(f"Error: {e}")
+
 
 # ---------------- MAIN ----------------
 def main():
@@ -590,6 +564,7 @@ def main():
         except Exception as e:
             print("Auto check error:", e)
         time.sleep(CHECK_INTERVAL)
+
 
 if __name__ == "__main__":
     main()
