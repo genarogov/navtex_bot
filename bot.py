@@ -21,7 +21,6 @@ EMAIL_PASS = os.getenv("EMAIL_PASS")
 CACHE_FILE = "cache.json"
 CHECK_INTERVAL = 1800
 
-
 def load_cache():
     if not os.path.exists(CACHE_FILE):
         return {"gmail": [], "gmail_initialized": False}
@@ -40,19 +39,16 @@ def load_cache():
     except Exception:
         return {"gmail": [], "gmail_initialized": False}
 
-
 def save_cache(data):
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-
 cache = load_cache()
 
 # ---------------- GMAIL SETTINGS ----------------
-SENDER = "benzviy.mot.gov.il@send.vpcontact.com"
+SENDER_KEYWORD = "mot.gov.il"
 SUBJECT_KEYWORD = "notice to mariner"
 TAIL_SCAN_LIMIT = 40
-
 
 # ---------------- HELPERS ----------------
 def decode_mime_words(value):
@@ -68,11 +64,9 @@ def decode_mime_words(value):
 
     return "".join(decoded).strip()
 
-
 def normalize_message_id(msg):
     raw = (msg.get("Message-ID") or "").strip()
     return raw.strip("<>").strip().lower()
-
 
 def html_escape(text):
     return (
@@ -81,7 +75,6 @@ def html_escape(text):
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-
 
 def split_html_message(text, limit=3500):
     parts = []
@@ -99,7 +92,6 @@ def split_html_message(text, limit=3500):
 
     return parts
 
-
 # ---------------- COORDINATES ----------------
 def dms_to_decimal(deg, minutes, seconds, direction):
     value = float(deg) + float(minutes) / 60 + float(seconds) / 3600
@@ -107,20 +99,17 @@ def dms_to_decimal(deg, minutes, seconds, direction):
         value = -value
     return value
 
-
 def dm_to_decimal(deg, minutes, direction):
     value = float(deg) + float(minutes) / 60
     if direction.upper() in ["S", "W"]:
         value = -value
     return value
 
-
 def decimal_signed(value, direction):
     value = float(value)
     if direction.upper() in ["S", "W"]:
         return -abs(value)
     return abs(value)
-
 
 def replace_coordinates(text, pattern, parser):
     matches = list(pattern.finditer(text))
@@ -140,7 +129,6 @@ def replace_coordinates(text, pattern, parser):
         text = text[:start] + html + text[end:]
 
     return text
-
 
 def add_coordinate_links(text):
     safe = html_escape(text or "")
@@ -166,7 +154,7 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_dms, parse_dms)
 
-    # 2) DM: 32 15.4 N 034 55.1 E / 32-15.4N 034-55.1E
+    # 2) DM
     pattern_dm = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
@@ -185,7 +173,7 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_dm, parse_dm)
 
-    # 3) Compact DM: 3215.4N 03455.1E
+    # 3) Compact DM
     pattern_compact_dm = re.compile(
         r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lat_dir>[NS])'
@@ -197,7 +185,7 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_compact_dm, parse_dm)
 
-    # 4) Decimal: 32.256N 34.817E
+    # 4) Decimal
     pattern_decimal = re.compile(
         r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lat_dir>[NS])'
@@ -216,7 +204,6 @@ def add_coordinate_links(text):
 
     return safe
 
-
 # ---------------- VALID STATUS ----------------
 def get_status_icon(valid):
     if not valid or valid == "N/A":
@@ -230,7 +217,6 @@ def get_status_icon(valid):
             pass
 
     return "✅"
-
 
 # ---------------- DOCX ----------------
 def read_docx(file_bytes):
@@ -257,7 +243,6 @@ def read_docx(file_bytes):
                 lines.append(" | ".join(row_cells))
 
     return "\n".join(lines)
-
 
 def extract_notice(doc_text):
     notice = "N/A"
@@ -314,7 +299,6 @@ def extract_notice(doc_text):
         "body": "\n".join(body).strip() or "N/A"
     }
 
-
 def build_message(payload):
     icon = get_status_icon(payload["valid"])
     body = add_coordinate_links(payload["body"])
@@ -326,14 +310,12 @@ def build_message(payload):
         f"{body}"
     )
 
-
 # ---------------- GMAIL ----------------
 def connect_gmail():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
     mail.select("inbox")
     return mail
-
 
 def message_matches(msg):
     from_header = decode_mime_words(msg.get("From", ""))
@@ -343,7 +325,7 @@ def message_matches(msg):
     if not msg_id:
         return None
 
-    if SENDER.lower() not in from_header.lower():
+    if SENDER_KEYWORD.lower() not in from_header.lower():
         return None
 
     if SUBJECT_KEYWORD.lower() not in subject.lower():
@@ -355,7 +337,6 @@ def message_matches(msg):
         "from": from_header,
         "subject": subject
     }
-
 
 def fetch_latest_matching_email():
     mail = connect_gmail()
@@ -390,7 +371,6 @@ def fetch_latest_matching_email():
     mail.logout()
     return None
 
-
 def fetch_recent_matching_emails():
     mail = connect_gmail()
     result, data = mail.search(None, "ALL")
@@ -424,7 +404,6 @@ def fetch_recent_matching_emails():
     mail.logout()
     return messages
 
-
 def extract_docx(msg):
     for part in msg.walk():
         filename = part.get_filename()
@@ -441,7 +420,6 @@ def extract_docx(msg):
                 return file_bytes
 
     return None
-
 
 def process_entry(bot, chat_id, entry):
     msg = entry["msg"]
@@ -465,7 +443,6 @@ def process_entry(bot, chat_id, entry):
 
     return True
 
-
 # ---------------- AUTO CHECK ----------------
 def initialize_gmail_cache_silently():
     if cache.get("gmail_initialized"):
@@ -477,7 +454,6 @@ def initialize_gmail_cache_silently():
 
     cache["gmail_initialized"] = True
     save_cache(cache)
-
 
 def auto_check(updater):
     try:
@@ -497,7 +473,6 @@ def auto_check(updater):
     except Exception as e:
         print("Gmail error:", e)
 
-
 # ---------------- COMMANDS ----------------
 def checkgovil(update, context):
     latest = fetch_latest_matching_email()
@@ -508,17 +483,14 @@ def checkgovil(update, context):
 
     process_entry(context.bot, update.message.chat.id, latest)
 
-
 def testbot(update, context):
     update.message.reply_text("Bot running")
-
 
 def clearcache(update, context):
     cache["gmail"] = []
     cache["gmail_initialized"] = False
     save_cache(cache)
     update.message.reply_text("Cache cleared")
-
 
 # ---------------- MAIN ----------------
 def main():
@@ -535,7 +507,6 @@ def main():
     while True:
         auto_check(updater)
         time.sleep(CHECK_INTERVAL)
-
 
 if __name__ == "__main__":
     main()
