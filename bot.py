@@ -344,41 +344,51 @@ def get_metarea():
         r.raise_for_status()
 
         soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text()
+        text = soup.get_text("\n")
 
-        issued = re.search(r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC", text)
-        issued = issued.group(0) if issued else "N/A"
+        lines = [line.strip() for line in text.splitlines()]
+        lines = [line for line in lines if line]
+        clean_text = "\n".join(lines)
 
-        start = text.find("TAURUS")
-        end = text.find("KASTELLORIZO SEA")
-
-        if start == -1:
-            return f"🕒 Issued: {issued}\n\nMETAREA text not found."
-
-        forecast = text[start:end] if end != -1 else text[start:]
+        issued_match = re.search(
+            r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC",
+            clean_text,
+            re.I
+        )
+        issued = issued_match.group(0) if issued_match else "N/A"
 
         blocks = []
 
         for i, zone in enumerate(ZONES):
-            s = forecast.find(zone)
-
-            if s == -1:
+            m = re.search(rf"\b{zone}\b", clean_text)
+            if not m:
                 continue
 
-            nxt = [forecast.find(z, s + 1) for z in ZONES[i + 1:]]
-            nxt = [n for n in nxt if n != -1]
+            start = m.start()
+            next_positions = []
 
-            e = min(nxt) if nxt else len(forecast)
+            for next_zone in ZONES[i + 1:]:
+                nm = re.search(rf"\b{next_zone}\b", clean_text[start + 1:])
+                if nm:
+                    next_positions.append(start + 1 + nm.start())
 
-            txt = forecast[s:e].strip()
+            end = min(next_positions) if next_positions else len(clean_text)
 
-            if txt.startswith(zone):
-                txt = txt[len(zone):].lstrip()
+            zone_block = clean_text[start:end].strip()
+            zone_lines = zone_block.splitlines()
 
-            blocks.append(f"📍 {zone}\n{txt}")
+            if zone_lines and zone_lines[0].strip().upper() == zone:
+                zone_lines = zone_lines[1:]
 
-        msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
-        return msg[:4000]
+            zone_text = " ".join(zone_lines)
+            zone_text = re.sub(r"\.\s*", ".\n", zone_text)
+
+            blocks.append(f"📍 {zone}\n{zone_text.strip()}")
+
+        if not blocks:
+            return f"🕒 Issued: {issued}\n\nMETAREA text not found."
+
+        return f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
 
     except Exception as e:
         print("METAREA error:", e)
