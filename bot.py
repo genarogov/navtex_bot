@@ -5,6 +5,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from telegram.ext import Updater, CommandHandler
+from datetime import datetime
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -67,7 +68,7 @@ def add_coordinate_links(text):
 def fetch_sealagom_full():
     """
     Возвращает список сообщений с основной страницы SEALAGOM.
-    Каждый элемент — кортеж: (номер, текст)
+    Каждый элемент — кортеж: (номер, текст, дата)
     """
     try:
         r = requests.get(SEALAGOM_URL, timeout=20)
@@ -78,17 +79,23 @@ def fetch_sealagom_full():
         messages = []
 
         for m in raw_msgs:
-            header_match = re.match(r'NAVAREA III - (\d{4}/\d{2})', m)
+            header_match = re.match(r'NAVAREA III - (\d{4}/\d{2})\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+\d{2}:\d{2}\s+UTC)', m)
             if not header_match:
                 continue
             number = header_match.group(1)
+            date_str = header_match.group(2)
+            # конвертируем в datetime
+            try:
+                msg_date = datetime.strptime(date_str, "%d %B %Y %H:%M UTC")
+            except:
+                msg_date = datetime.min  # если не парсится, минимальная дата
             clean = m.strip()
             if len(clean) > 30:
-                messages.append((number, clean))
+                messages.append((number, clean, msg_date))
 
-        # сортируем по номеру для правильной проверки новизны
-        messages.sort(key=lambda x: x[0])
-        return messages
+        # сортируем по дате, новейшие первыми
+        messages_sorted = sorted(messages, key=lambda x: x[2], reverse=True)
+        return messages_sorted
 
     except Exception as e:
         print("Sealagom full fetch error:", e)
@@ -101,7 +108,7 @@ def send_new_sealagom(updater):
     fetched = fetch_sealagom_full()
     new_messages = []
 
-    for number, msg_text in fetched:
+    for number, msg_text, msg_date in fetched:
         if number not in cache["sealagom"]:
             msg_with_links = add_coordinate_links(msg_text[:3500])
             updater.bot.send_message(
@@ -118,16 +125,14 @@ def send_new_sealagom(updater):
 
 def test(update, context):
     """
-    Показывает 5 новейших сообщений (по номеру)
+    Показывает 5 новейших сообщений (по дате)
     """
     messages = fetch_sealagom_full()
     if not messages:
         update.message.reply_text("No Sealagom messages")
         return
 
-    # сортируем по номеру убыванию, чтобы новейшие были первыми
-    messages_sorted = sorted(messages, key=lambda x: x[0], reverse=True)
-    for number, msg_text in messages_sorted[:5]:
+    for number, msg_text, msg_date in messages[:5]:
         msg = add_coordinate_links(msg_text[:3500])
         update.message.reply_text(
             msg,
