@@ -2,13 +2,18 @@ import os
 import re
 import time
 import json
+import math
 import imaplib
 import email
 import tempfile
+from io import BytesIO
+from datetime import datetime, date
 from email.header import decode_header
 
+import requests
 from telegram.ext import Updater, CommandHandler
 from docx import Document
+from PIL import Image, ImageDraw
 
 # ---------------- ENV ----------------
 TOKEN = os.getenv("BOT_TOKEN")
@@ -154,9 +159,6 @@ def add_coordinate_links(text):
     safe = html_escape(text)
 
     # 1) DMS
-    # 32 58 10 N 034 00 00 E
-    # 32°58'10"N 034°00'00"E
-    # 32 58 10N, 034 00 00E
     pattern_dms = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
         r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
@@ -188,9 +190,6 @@ def add_coordinate_links(text):
     safe = replace_coordinate_pairs(safe, pattern_dms, parse_dms)
 
     # 2) DM
-    # 32-15.4N 034-55.1E
-    # 32 15.4 N 034 55.1 E
-    # 32°15.4'N 034°55.1'E
     pattern_dm = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
@@ -218,7 +217,6 @@ def add_coordinate_links(text):
     safe = replace_coordinate_pairs(safe, pattern_dm, parse_dm)
 
     # 3) Compact DM
-    # 3215.4N 03455.1E
     pattern_compact_dm = re.compile(
         r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lat_dir>[NS])'
@@ -231,8 +229,6 @@ def add_coordinate_links(text):
     safe = replace_coordinate_pairs(safe, pattern_compact_dm, parse_dm)
 
     # 4) Decimal with letters
-    # 32.256N 34.817E
-    # 32 N 034 E
     pattern_decimal = re.compile(
         r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lat_dir>[NS])'
@@ -250,6 +246,250 @@ def add_coordinate_links(text):
     safe = replace_coordinate_pairs(safe, pattern_decimal, parse_decimal)
 
     return safe
+
+
+def extract_coordinates(text):
+    if not text:
+        return []
+
+    coords = []
+
+    pattern_dms = re.compile(
+        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
+        r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
+        r'(?P<lat_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″]|sec|s)?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:-]*'
+        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*'
+        r'(?P<lon_min>\d{1,2})\s*[\'′]?\s*'
+        r'(?P<lon_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″]|sec|s)?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.IGNORECASE
+    )
+
+    for m in pattern_dms.finditer(text):
+        try:
+            lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), m.group("lat_dir"))
+            lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    pattern_dm = re.compile(
+        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
+        r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:-]*'
+        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*[-–—:/,\s]?\s*'
+        r'(?P<lon_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.IGNORECASE
+    )
+
+    for m in pattern_dm.finditer(text):
+        try:
+            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
+            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    pattern_compact_dm = re.compile(
+        r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:-]*'
+        r'(?P<lon_deg>\d{3})(?P<lon_min>\d{2}(?:\.\d+)?)\s*'
+        r'(?P<lon_dir>[EW])',
+        re.IGNORECASE
+    )
+
+    for m in pattern_compact_dm.finditer(text):
+        try:
+            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
+            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    pattern_decimal = re.compile(
+        r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:-]*'
+        r'(?P<lon>\d{1,3}(?:\.\d+)?)\s*[°º]?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.IGNORECASE
+    )
+
+    for m in pattern_decimal.finditer(text):
+        try:
+            lat = decimal_signed(m.group("lat"), m.group("lat_dir"))
+            lon = decimal_signed(m.group("lon"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    cleaned = []
+    seen = set()
+    for lat, lon in coords:
+        key = (round(lat, 6), round(lon, 6))
+        if key not in seen:
+            seen.add(key)
+            cleaned.append((lat, lon))
+
+    return cleaned
+
+
+# ---------------- STATUS ----------------
+def get_status_icon(valid_text):
+    if not valid_text or valid_text == "N/A":
+        return "✅"
+
+    valid_text = valid_text.strip()
+
+    for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            valid_date = datetime.strptime(valid_text, fmt).date()
+            if valid_date < date.today():
+                return "❌"
+            return "✅"
+        except Exception:
+            pass
+
+    return "✅"
+
+
+# ---------------- MAP ----------------
+TILE_SIZE = 256
+
+
+def latlon_to_world_pixels(lat, lon, zoom):
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    sin_lat = math.sin(math.radians(lat))
+    scale = TILE_SIZE * (2 ** zoom)
+
+    x = (lon + 180.0) / 360.0 * scale
+    y = (0.5 - math.log((1 + sin_lat) / (1 - sin_lat)) / (4 * math.pi)) * scale
+    return x, y
+
+
+def choose_zoom(coords, max_tiles=4):
+    if len(coords) == 1:
+        return 11
+
+    lats = [c[0] for c in coords]
+    lons = [c[1] for c in coords]
+
+    for zoom in range(14, 2, -1):
+        xs = []
+        ys = []
+        for lat, lon in coords:
+            x, y = latlon_to_world_pixels(lat, lon, zoom)
+            xs.append(x)
+            ys.append(y)
+
+        width_tiles = (max(xs) - min(xs)) / TILE_SIZE + 1
+        height_tiles = (max(ys) - min(ys)) / TILE_SIZE + 1
+
+        if width_tiles <= max_tiles and height_tiles <= max_tiles:
+            return zoom
+
+    return 5
+
+
+def download_tile(z, x, y):
+    url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    headers = {
+        "User-Agent": "navtex-bot/1.0"
+    }
+
+    r = requests.get(url, headers=headers, timeout=20)
+    r.raise_for_status()
+    return Image.open(BytesIO(r.content)).convert("RGB")
+
+
+def render_map_image(coords):
+    if not coords:
+        return None
+
+    zoom = choose_zoom(coords)
+
+    xs = []
+    ys = []
+    for lat, lon in coords:
+        x, y = latlon_to_world_pixels(lat, lon, zoom)
+        xs.append(x)
+        ys.append(y)
+
+    pad = 100
+    min_x = min(xs) - pad
+    max_x = max(xs) + pad
+    min_y = min(ys) - pad
+    max_y = max(ys) + pad
+
+    min_tile_x = int(min_x // TILE_SIZE)
+    max_tile_x = int(max_x // TILE_SIZE)
+    min_tile_y = int(min_y // TILE_SIZE)
+    max_tile_y = int(max_y // TILE_SIZE)
+
+    world_tile_count = 2 ** zoom
+
+    width = (max_tile_x - min_tile_x + 1) * TILE_SIZE
+    height = (max_tile_y - min_tile_y + 1) * TILE_SIZE
+    canvas = Image.new("RGB", (width, height), "white")
+
+    for tile_x in range(min_tile_x, max_tile_x + 1):
+        for tile_y in range(min_tile_y, max_tile_y + 1):
+            wrapped_x = tile_x % world_tile_count
+            if tile_y < 0 or tile_y >= world_tile_count:
+                continue
+
+            try:
+                tile = download_tile(zoom, wrapped_x, tile_y)
+                px = (tile_x - min_tile_x) * TILE_SIZE
+                py = (tile_y - min_tile_y) * TILE_SIZE
+                canvas.paste(tile, (px, py))
+            except Exception:
+                pass
+
+    draw = ImageDraw.Draw(canvas)
+
+    pixel_points = []
+    for lat, lon in coords:
+        wx, wy = latlon_to_world_pixels(lat, lon, zoom)
+        px = wx - min_tile_x * TILE_SIZE
+        py = wy - min_tile_y * TILE_SIZE
+        pixel_points.append((px, py))
+
+    if len(pixel_points) > 1:
+        draw.line(pixel_points, fill=(0, 102, 255), width=4)
+
+    for i, (px, py) in enumerate(pixel_points):
+        if len(pixel_points) == 1:
+            color = (220, 0, 0)
+            r = 8
+            draw.ellipse((px - r, py - r, px + r, py + r), fill=color, outline="white", width=2)
+        else:
+            if i == 0:
+                color = (0, 170, 0)
+                label = "S"
+            elif i == len(pixel_points) - 1:
+                color = (220, 0, 0)
+                label = "F"
+            else:
+                color = (0, 102, 255)
+                label = None
+
+            r = 8
+            draw.ellipse((px - r, py - r, px + r, py + r), fill=color, outline="white", width=2)
+
+            if label:
+                draw.rectangle((px + 10, py - 12, px + 28, py + 10), fill="white", outline=color, width=2)
+                draw.text((px + 15, py - 10), label, fill=color)
+
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    canvas.save(out.name, "PNG")
+    out.close()
+    return out.name
 
 
 # ---------------- DOCX ----------------
@@ -344,13 +584,14 @@ def extract_notice_payload(doc_text):
 
 
 def build_html_message(payload):
+    status_icon = get_status_icon(payload["valid"])
     notice_no = html_escape(payload["notice_no"])
     start = html_escape(payload["start"])
     valid = html_escape(payload["valid"])
     body = add_coordinate_links(payload["body"])
 
     return (
-        f"<b>Notice to mariner No:</b> {notice_no}\n"
+        f"{status_icon} <b>Notice to mariner No:</b> {notice_no}\n"
         f"<b>Start:</b> {start}\n"
         f"<b>Valid:</b> {valid}\n\n"
         f"{body}"
@@ -444,6 +685,19 @@ def get_latest_matching_email():
 
 
 def send_notice_to_chat(bot, chat_id, payload):
+    coords = extract_coordinates(payload["body"])
+    map_path = None
+
+    try:
+        if coords:
+            map_path = render_map_image(coords)
+    except Exception as e:
+        print("Map render error:", e)
+
+    if map_path and os.path.exists(map_path):
+        with open(map_path, "rb") as img:
+            bot.send_photo(chat_id=chat_id, photo=img)
+
     html_msg = build_html_message(payload)
 
     for chunk in split_html_message(html_msg):
