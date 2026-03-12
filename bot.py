@@ -1,255 +1,215 @@
 import os
 import re
-import time
 import json
+import time
 import imaplib
 import email
 from email.header import decode_header
-import requests
-from bs4 import BeautifulSoup
+
 from telegram.ext import Updater, CommandHandler
+
 from docx import Document
 from pdf2image import convert_from_path
-from PIL import Image
 
-# ---------------- ENV ----------------
-TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASS = os.getenv("EMAIL_PASS")
+TOKEN=os.getenv("BOT_TOKEN")
+CHAT_ID=os.getenv("CHAT_ID")
+
+EMAIL_USER=os.getenv("EMAIL_USER")
+EMAIL_PASS=os.getenv("EMAIL_PASS")
+
+SENDER="benzviy.mot.gov.il@send.vpcontact.com"
+
+CHECK_INTERVAL=1800
+CACHE_FILE="cache.json"
 
 # ---------------- CACHE ----------------
-CACHE_FILE = "cache.json"
-CHECK_INTERVAL = 1800  # 30 мин
 
 def load_cache():
+
     if not os.path.exists(CACHE_FILE):
-        return {"sealagom": [], "gov": {"last_number": "019", "year": "2026", "last_format": "_"}, "gmail": []}
+
+        return {"gmail":[]}
+
     with open(CACHE_FILE) as f:
+
         return json.load(f)
 
-def save_cache(data):
-    with open(CACHE_FILE, "w") as f:
-        json.dump(data, f)
+def save_cache(c):
 
-cache = load_cache()
+    with open(CACHE_FILE,"w") as f:
+
+        json.dump(c,f)
+
+cache=load_cache()
 
 # ---------------- COORDINATES ----------------
-def convert_to_decimal(deg, minutes, direction):
-    value = float(deg) + float(minutes)/60
-    if direction in ["S","W"]:
-        value = -value
-    return value
 
-def add_coordinate_links(text):
-    coord_pattern = re.compile(r'(\d{1,3})[°\-\s]+(\d{1,2}\.\d+)\s*([NSEW])', re.IGNORECASE)
-    coords = list(coord_pattern.finditer(text))
-    replacements = []
-    i = 0
-    while i < len(coords)-1:
-        lat = coords[i]
-        lon = coords[i+1]
-        if lat.group(3).upper() in ["N","S"] and lon.group(3).upper() in ["E","W"]:
-            lat_val = convert_to_decimal(lat.group(1), lat.group(2), lat.group(3).upper())
-            lon_val = convert_to_decimal(lon.group(1), lon.group(2), lon.group(3).upper())
-            start = lat.start()
-            end = lon.end()
-            original = text[start:end]
-            link = f"https://maps.google.com/?q={lat_val},{lon_val}"
-            html = f'<a href="{link}">{original}</a>'
-            replacements.append((start,end,html))
-            i += 2
-        else:
-            i += 1
-    for start,end,html in reversed(replacements):
-        text = text[:start]+html+text[end:]
-    return text
+def coord_links(text):
 
-# ---------------- SEALAGOM ----------------
-SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
+    pattern=re.compile(
+    r'(\d{1,3})[^\d]+(\d{1,2}\.?\d*)\s*([NS])[^\d]+(\d{1,3})[^\d]+(\d{1,2}\.?\d*)\s*([EW])',
+    re.I)
 
-def fetch_sealagom():
-    try:
-        r = requests.get(SEALAGOM_URL, timeout=20)
-        soup = BeautifulSoup(r.text,"html.parser")
-        messages = []
-        # Берём все div с сообщениями (старый рабочий парсер)
-        for div in soup.find_all("div", class_="active-message"):
-            text = div.get_text("\n").strip()
-            if text.startswith("NAVAREA III -"):
-                messages.append(text)
-        return messages
-    except Exception as e:
-        print("Sealagom fetch error:", e)
-        return []
+    def repl(m):
 
-def send_new_sealagom(updater):
-    messages = fetch_sealagom()
-    new_msgs = [m for m in messages if m not in cache["sealagom"]]
-    for m in new_msgs:
-        msg = add_coordinate_links(m[:3500])
-        if CHAT_ID:
-            updater.bot.send_message(CHAT_ID, msg, parse_mode="HTML", disable_web_page_preview=True)
-        cache["sealagom"].append(m)
-    if new_msgs:
-        save_cache(cache)
+        lat=float(m.group(1))+float(m.group(2))/60
+        lon=float(m.group(4))+float(m.group(5))/60
 
-# ---------------- GOV ----------------
-def page_exists(url):
-    try:
-        r = requests.get(url, timeout=10)
-        return r.status_code == 200
-    except:
-        return False
+        if m.group(3).upper()=="S":
+            lat=-lat
 
-def find_latest_gov(last_number, year, fmt):
-    low = int(last_number)
-    high = 300
-    latest = low
-    while low <= high:
-        mid = (low + high) // 2
-        num = f"{mid:03d}"
-        url = f"https://www.gov.il/en/pages/mariners{fmt}{num}{fmt}{year}"
-        if page_exists(url):
-            latest = mid
-            low = mid + 1
-        else:
-            high = mid - 1
-    return latest
+        if m.group(6).upper()=="W":
+            lon=-lon
 
-def send_gov_site(updater):
-    last_number = cache["gov"]["last_number"]
-    year = cache["gov"]["year"]
-    fmt = cache["gov"]["last_format"]
-    latest = find_latest_gov(last_number, year, fmt)
-    url = f"https://www.gov.il/en/pages/mariners{fmt}{latest:03d}{fmt}{year}"
-    if CHAT_ID:
-        updater.bot.send_message(CHAT_ID, f"Last message from GOV.il:\n{url}")
+        url=f"https://maps.google.com/?q={lat},{lon}"
 
-# ---------------- METAREA ----------------
-METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-ZONES = ["TAURUS","DELTA","CRUSADE"]
+        return f'<a href="{url}">{m.group(0)}</a>'
 
-def get_metarea():
-    r = requests.get(METAREA_URL,timeout=20)
-    soup = BeautifulSoup(r.text,"html.parser")
-    text = soup.get_text()
-    issued = re.search(r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC",text)
-    issued = issued.group(0) if issued else "N/A"
-    start = text.find("TAURUS")
-    end = text.find("KASTELLORIZO SEA")
-    forecast = text[start:end]
-    blocks=[]
-    for i,zone in enumerate(ZONES):
-        s = forecast.find(zone)
-        if s==-1:
-            continue
-        nxt=[forecast.find(z,s+1) for z in ZONES[i+1:]]
-        nxt=[n for n in nxt if n!=-1]
-        e=min(nxt) if nxt else len(forecast)
-        txt=forecast[s:e].strip()
-        if txt.startswith(zone):
-            txt=txt[len(zone):].lstrip()
-        blocks.append(f"📍 {zone}\n{txt}")
-    msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
-    return msg[:4000]
-
-def send_metarea(updater):
-    if CHAT_ID:
-        updater.bot.send_message(CHAT_ID, get_metarea())
+    return pattern.sub(repl,text)
 
 # ---------------- GMAIL ----------------
-SENDER = "benzviy.mot.gov.il@send.vpcontact.com"
-SUBJECT_KEYWORD = "notice to mariner"
 
-def process_gmail(updater):
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(EMAIL_USER, EMAIL_PASS)
-        mail.select("inbox")
-        result, data = mail.search(None, "ALL")
-        mail_ids = data[0].split()
-        for num in mail_ids[-10:]:
-            result, msg_data = mail.fetch(num, "(RFC822)")
-            msg = email.message_from_bytes(msg_data[0][1])
-            subject, encoding = decode_header(msg["Subject"])[0]
-            if isinstance(subject, bytes):
-                subject = subject.decode(encoding or "utf-8")
-            if SENDER.lower() not in msg["From"].lower():
-                continue
-            if SUBJECT_KEYWORD.lower() not in subject.lower():
-                continue
-            if msg["Message-ID"] in cache["gmail"]:
-                continue
-            for part in msg.walk():
-                if part.get_content_type() == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                    filename = part.get_filename()
-                    content = part.get_payload(decode=True)
-                    with open(filename, "wb") as f:
-                        f.write(content)
-                    doc = Document(filename)
-                    full_text = "\n".join([p.text for p in doc.paragraphs])
-                    full_text = add_coordinate_links(full_text)
-                    img = filename.replace(".docx",".png")
-                    img_obj = Image.new("RGB",(800,1000),(255,255,255))
-                    img_obj.save(img)
-                    if CHAT_ID:
-                        updater.bot.send_message(CHAT_ID, f"{subject}\n\n{full_text}")
-                        updater.bot.send_photo(CHAT_ID, photo=open(img,"rb"))
-            cache["gmail"].append(msg["Message-ID"])
-        save_cache(cache)
-    except Exception as e:
-        print("Gmail error:", e)
+def check_gmail():
 
-# ---------------- TEST HANDLERS ----------------
-def test(update, context):
-    messages = fetch_sealagom()
-    if not messages:
-        update.message.reply_text("No Sealagom messages")
+    mail=imaplib.IMAP4_SSL("imap.gmail.com")
+
+    mail.login(EMAIL_USER,EMAIL_PASS)
+
+    mail.select("inbox")
+
+    status,data=mail.search(None,'ALL')
+
+    ids=data[0].split()
+
+    ids=ids[-10:]
+
+    for i in ids[::-1]:
+
+        status,msg_data=mail.fetch(i,'(RFC822)')
+
+        msg=email.message_from_bytes(msg_data[0][1])
+
+        subject,enc=decode_header(msg["Subject"])[0]
+
+        if isinstance(subject,bytes):
+
+            subject=subject.decode(enc or "utf8")
+
+        if SENDER not in msg["From"]:
+            continue
+
+        if "notice to mariner" not in subject.lower():
+            continue
+
+        mid=msg["Message-ID"]
+
+        if mid in cache["gmail"]:
+            continue
+
+        for part in msg.walk():
+
+            if part.get_content_type()=="application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+
+                filename=part.get_filename()
+
+                with open(filename,"wb") as f:
+
+                    f.write(part.get_payload(decode=True))
+
+                doc=Document(filename)
+
+                text="\n".join([p.text for p in doc.paragraphs])
+
+                text=coord_links(text)
+
+                pdf=filename.replace(".docx",".pdf")
+
+                os.system(f'libreoffice --headless --convert-to pdf "{filename}"')
+
+                if os.path.exists(pdf):
+
+                    img=filename.replace(".docx",".png")
+
+                    images=convert_from_path(pdf)
+
+                    images[0].save(img)
+
+                    return subject,text,img,mid
+
+    return None,None,None,None
+
+# ---------------- COMMAND ----------------
+
+def checkgovil(update,context):
+
+    subject,text,img,mid=check_gmail()
+
+    if not subject:
+
+        update.message.reply_text("No new messages")
+
         return
-    for m in messages:
-        msg = add_coordinate_links(m[:3500])
-        update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
 
-def testbot(update, context):
-    update.message.reply_text("✅ Bot running")
+    context.bot.send_message(
+    CHAT_ID,
+    f"{subject}\n\n{text}",
+    parse_mode="HTML",
+    disable_web_page_preview=True)
 
-def testgov(update, context):
-    last_number = cache["gov"]["last_number"]
-    year = cache["gov"]["year"]
-    fmt = cache["gov"]["last_format"]
-    latest = find_latest_gov(last_number, year, fmt)
-    url = f"https://www.gov.il/en/pages/mariners{fmt}{latest:03d}{fmt}{year}"
-    update.message.reply_text(f"Last message from GOV.il:\n{url}")
+    context.bot.send_photo(CHAT_ID,photo=open(img,"rb"))
 
-def metarea(update,context):
-    update.message.reply_text(get_metarea())
+    cache["gmail"].append(mid)
 
-def get_chat_id_cmd(update, context):
-    update.message.reply_text(f"Chat ID: {update.message.chat.id}")
+    save_cache(cache)
 
-# ---------------- MAIN ----------------
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+# ---------------- AUTO CHECK ----------------
 
-    dp.add_handler(CommandHandler("testbot", testbot))
-    dp.add_handler(CommandHandler("test", test))
-    dp.add_handler(CommandHandler("testgov", testgov))
-    dp.add_handler(CommandHandler("metarea", metarea))
-    dp.add_handler(CommandHandler("getid", get_chat_id_cmd))
+def auto(updater):
 
-    updater.start_polling()
-    print("BOT STARTED")
-
-    # Авто-проверка только для новых сообщений SEALAGOM и Gmail
     while True:
+
         try:
-            send_new_sealagom(updater)
-            process_gmail(updater)
+
+            subject,text,img,mid=check_gmail()
+
+            if subject:
+
+                updater.bot.send_message(
+                CHAT_ID,
+                f"{subject}\n\n{text}",
+                parse_mode="HTML",
+                disable_web_page_preview=True)
+
+                updater.bot.send_photo(CHAT_ID,photo=open(img,"rb"))
+
+                cache["gmail"].append(mid)
+
+                save_cache(cache)
+
         except Exception as e:
-            print("Auto check error:", e)
+
+            print(e)
+
         time.sleep(CHECK_INTERVAL)
 
+# ---------------- MAIN ----------------
+
+def main():
+
+    updater=Updater(TOKEN)
+
+    dp=updater.dispatcher
+
+    dp.add_handler(CommandHandler("checkgovil",checkgovil))
+
+    updater.start_polling()
+
+    import threading
+
+    threading.Thread(target=auto,args=(updater,),daemon=True).start()
+
+    updater.idle()
+
 if __name__=="__main__":
+
     main()
