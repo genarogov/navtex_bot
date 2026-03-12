@@ -2,18 +2,14 @@ import os
 import re
 import time
 import json
-import math
 import imaplib
 import email
 import tempfile
-from io import BytesIO
 from datetime import datetime, date
 from email.header import decode_header
 
-import requests
 from telegram.ext import Updater, CommandHandler
 from docx import Document
-from PIL import Image, ImageDraw
 
 # ---------------- ENV ----------------
 TOKEN = os.getenv("BOT_TOKEN")
@@ -23,15 +19,12 @@ EMAIL_PASS = os.getenv("EMAIL_PASS")
 
 # ---------------- CACHE ----------------
 CACHE_FILE = "cache.json"
-CHECK_INTERVAL = 1800  # 30 min
+CHECK_INTERVAL = 1800
 
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
-        return {
-            "gmail": [],
-            "gmail_initialized": False
-        }
+        return {"gmail": [], "gmail_initialized": False}
 
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -45,10 +38,7 @@ def load_cache():
 
         return data
     except Exception:
-        return {
-            "gmail": [],
-            "gmail_initialized": False
-        }
+        return {"gmail": [], "gmail_initialized": False}
 
 
 def save_cache(data):
@@ -61,36 +51,36 @@ cache = load_cache()
 # ---------------- GMAIL SETTINGS ----------------
 SENDER = "benzviy.mot.gov.il@send.vpcontact.com"
 SUBJECT_KEYWORD = "notice to mariner"
+TAIL_SCAN_LIMIT = 40
+
 
 # ---------------- HELPERS ----------------
-def html_escape(text):
-    if text is None:
+def decode_mime_words(value):
+    if not value:
         return ""
+
+    decoded = []
+    for part, enc in decode_header(value):
+        if isinstance(part, bytes):
+            decoded.append(part.decode(enc or "utf-8", errors="ignore"))
+        else:
+            decoded.append(part)
+
+    return "".join(decoded).strip()
+
+
+def normalize_message_id(msg):
+    raw = (msg.get("Message-ID") or "").strip()
+    return raw.strip("<>").strip().lower()
+
+
+def html_escape(text):
     return (
         str(text)
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-
-
-def decode_mime_words(value):
-    if not value:
-        return ""
-
-    decoded_parts = []
-    for part, enc in decode_header(value):
-        if isinstance(part, bytes):
-            decoded_parts.append(part.decode(enc or "utf-8", errors="ignore"))
-        else:
-            decoded_parts.append(part)
-
-    return "".join(decoded_parts).strip()
-
-
-def normalize_message_id(msg):
-    raw = (msg.get("Message-ID") or "").strip()
-    return raw.strip("<>").strip().lower()
 
 
 def split_html_message(text, limit=3500):
@@ -112,84 +102,71 @@ def split_html_message(text, limit=3500):
 
 # ---------------- COORDINATES ----------------
 def dms_to_decimal(deg, minutes, seconds, direction):
-    value = float(deg) + float(minutes) / 60.0 + float(seconds) / 3600.0
-    if direction.upper() in ("S", "W"):
+    value = float(deg) + float(minutes) / 60 + float(seconds) / 3600
+    if direction.upper() in ["S", "W"]:
         value = -value
     return value
 
 
 def dm_to_decimal(deg, minutes, direction):
-    value = float(deg) + float(minutes) / 60.0
-    if direction.upper() in ("S", "W"):
+    value = float(deg) + float(minutes) / 60
+    if direction.upper() in ["S", "W"]:
         value = -value
     return value
 
 
 def decimal_signed(value, direction):
-    val = float(value)
-    if direction.upper() in ("S", "W"):
-        return -abs(val)
-    return abs(val)
+    value = float(value)
+    if direction.upper() in ["S", "W"]:
+        return -abs(value)
+    return abs(value)
 
 
-def replace_coordinate_pairs(text, pattern, parser):
+def replace_coordinates(text, pattern, parser):
     matches = list(pattern.finditer(text))
     replacements = []
 
     for m in matches:
         try:
             lat, lon = parser(m)
-            original = m.group(0)
             url = f"https://maps.google.com/?q={lat},{lon}"
-            repl = f'<a href="{url}">{original}</a>'
-            replacements.append((m.start(), m.end(), repl))
+            original = m.group(0)
+            html = f'<a href="{url}">{original}</a>'
+            replacements.append((m.start(), m.end(), html))
         except Exception:
-            continue
+            pass
 
-    for start, end, repl in reversed(replacements):
-        text = text[:start] + repl + text[end:]
+    for start, end, html in reversed(replacements):
+        text = text[:start] + html + text[end:]
 
     return text
 
 
 def add_coordinate_links(text):
-    if not text:
-        return ""
+    safe = html_escape(text or "")
 
-    safe = html_escape(text)
-
-    # 1) DMS
+    # 1) DMS: 32 58 10 N 034 00 00 E
     pattern_dms = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
         r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
-        r'(?P<lat_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″]|sec|s)?\s*'
+        r'(?P<lat_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
         r'(?P<lat_dir>[NS])'
         r'[\s,;/:-]*'
         r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*'
         r'(?P<lon_min>\d{1,2})\s*[\'′]?\s*'
-        r'(?P<lon_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″]|sec|s)?\s*'
+        r'(?P<lon_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
         r'(?P<lon_dir>[EW])',
-        re.IGNORECASE
+        re.I
     )
 
     def parse_dms(m):
-        lat = dms_to_decimal(
-            m.group("lat_deg"),
-            m.group("lat_min"),
-            m.group("lat_sec"),
-            m.group("lat_dir")
-        )
-        lon = dms_to_decimal(
-            m.group("lon_deg"),
-            m.group("lon_min"),
-            m.group("lon_sec"),
-            m.group("lon_dir")
-        )
+        lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), m.group("lat_dir"))
+        lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), m.group("lon_dir"))
         return lat, lon
 
-    safe = replace_coordinate_pairs(safe, pattern_dms, parse_dms)
+    safe = replace_coordinates(safe, pattern_dms, parse_dms)
 
-    # 2) DM
+    # 2) DM: 32 15.4 N 034 55.1 E / 32-15.4N 034-55.1E
     pattern_dm = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
@@ -198,44 +175,36 @@ def add_coordinate_links(text):
         r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lon_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
         r'(?P<lon_dir>[EW])',
-        re.IGNORECASE
+        re.I
     )
 
     def parse_dm(m):
-        lat = dm_to_decimal(
-            m.group("lat_deg"),
-            m.group("lat_min"),
-            m.group("lat_dir")
-        )
-        lon = dm_to_decimal(
-            m.group("lon_deg"),
-            m.group("lon_min"),
-            m.group("lon_dir")
-        )
+        lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
+        lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
         return lat, lon
 
-    safe = replace_coordinate_pairs(safe, pattern_dm, parse_dm)
+    safe = replace_coordinates(safe, pattern_dm, parse_dm)
 
-    # 3) Compact DM
+    # 3) Compact DM: 3215.4N 03455.1E
     pattern_compact_dm = re.compile(
         r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lat_dir>[NS])'
         r'[\s,;/:-]*'
         r'(?P<lon_deg>\d{3})(?P<lon_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lon_dir>[EW])',
-        re.IGNORECASE
+        re.I
     )
 
-    safe = replace_coordinate_pairs(safe, pattern_compact_dm, parse_dm)
+    safe = replace_coordinates(safe, pattern_compact_dm, parse_dm)
 
-    # 4) Decimal with letters
+    # 4) Decimal: 32.256N 34.817E
     pattern_decimal = re.compile(
         r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lat_dir>[NS])'
         r'[\s,;/:-]*'
         r'(?P<lon>\d{1,3}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lon_dir>[EW])',
-        re.IGNORECASE
+        re.I
     )
 
     def parse_decimal(m):
@@ -243,262 +212,33 @@ def add_coordinate_links(text):
         lon = decimal_signed(m.group("lon"), m.group("lon_dir"))
         return lat, lon
 
-    safe = replace_coordinate_pairs(safe, pattern_decimal, parse_decimal)
+    safe = replace_coordinates(safe, pattern_decimal, parse_decimal)
 
     return safe
 
 
-def extract_coordinates(text):
-    if not text:
-        return []
-
-    coords = []
-
-    pattern_dms = re.compile(
-        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
-        r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
-        r'(?P<lat_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″]|sec|s)?\s*'
-        r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
-        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*'
-        r'(?P<lon_min>\d{1,2})\s*[\'′]?\s*'
-        r'(?P<lon_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″]|sec|s)?\s*'
-        r'(?P<lon_dir>[EW])',
-        re.IGNORECASE
-    )
-
-    for m in pattern_dms.finditer(text):
-        try:
-            lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), m.group("lat_dir"))
-            lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), m.group("lon_dir"))
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    pattern_dm = re.compile(
-        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
-        r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
-        r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
-        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*[-–—:/,\s]?\s*'
-        r'(?P<lon_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
-        r'(?P<lon_dir>[EW])',
-        re.IGNORECASE
-    )
-
-    for m in pattern_dm.finditer(text):
-        try:
-            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
-            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    pattern_compact_dm = re.compile(
-        r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
-        r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
-        r'(?P<lon_deg>\d{3})(?P<lon_min>\d{2}(?:\.\d+)?)\s*'
-        r'(?P<lon_dir>[EW])',
-        re.IGNORECASE
-    )
-
-    for m in pattern_compact_dm.finditer(text):
-        try:
-            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
-            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    pattern_decimal = re.compile(
-        r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
-        r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
-        r'(?P<lon>\d{1,3}(?:\.\d+)?)\s*[°º]?\s*'
-        r'(?P<lon_dir>[EW])',
-        re.IGNORECASE
-    )
-
-    for m in pattern_decimal.finditer(text):
-        try:
-            lat = decimal_signed(m.group("lat"), m.group("lat_dir"))
-            lon = decimal_signed(m.group("lon"), m.group("lon_dir"))
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    cleaned = []
-    seen = set()
-    for lat, lon in coords:
-        key = (round(lat, 6), round(lon, 6))
-        if key not in seen:
-            seen.add(key)
-            cleaned.append((lat, lon))
-
-    return cleaned
-
-
-# ---------------- STATUS ----------------
-def get_status_icon(valid_text):
-    if not valid_text or valid_text == "N/A":
+# ---------------- VALID STATUS ----------------
+def get_status_icon(valid):
+    if not valid or valid == "N/A":
         return "✅"
-
-    valid_text = valid_text.strip()
 
     for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d"):
         try:
-            valid_date = datetime.strptime(valid_text, fmt).date()
-            if valid_date < date.today():
-                return "❌"
-            return "✅"
+            d = datetime.strptime(valid.strip(), fmt).date()
+            return "❌" if d < date.today() else "✅"
         except Exception:
             pass
 
     return "✅"
 
 
-# ---------------- MAP ----------------
-TILE_SIZE = 256
-
-
-def latlon_to_world_pixels(lat, lon, zoom):
-    lat = max(min(lat, 85.05112878), -85.05112878)
-    sin_lat = math.sin(math.radians(lat))
-    scale = TILE_SIZE * (2 ** zoom)
-
-    x = (lon + 180.0) / 360.0 * scale
-    y = (0.5 - math.log((1 + sin_lat) / (1 - sin_lat)) / (4 * math.pi)) * scale
-    return x, y
-
-
-def choose_zoom(coords, max_tiles=4):
-    if len(coords) == 1:
-        return 11
-
-    lats = [c[0] for c in coords]
-    lons = [c[1] for c in coords]
-
-    for zoom in range(14, 2, -1):
-        xs = []
-        ys = []
-        for lat, lon in coords:
-            x, y = latlon_to_world_pixels(lat, lon, zoom)
-            xs.append(x)
-            ys.append(y)
-
-        width_tiles = (max(xs) - min(xs)) / TILE_SIZE + 1
-        height_tiles = (max(ys) - min(ys)) / TILE_SIZE + 1
-
-        if width_tiles <= max_tiles and height_tiles <= max_tiles:
-            return zoom
-
-    return 5
-
-
-def download_tile(z, x, y):
-    url = f"https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-    headers = {
-        "User-Agent": "navtex-bot/1.0"
-    }
-
-    r = requests.get(url, headers=headers, timeout=20)
-    r.raise_for_status()
-    return Image.open(BytesIO(r.content)).convert("RGB")
-
-
-def render_map_image(coords):
-    if not coords:
-        return None
-
-    zoom = choose_zoom(coords)
-
-    xs = []
-    ys = []
-    for lat, lon in coords:
-        x, y = latlon_to_world_pixels(lat, lon, zoom)
-        xs.append(x)
-        ys.append(y)
-
-    pad = 100
-    min_x = min(xs) - pad
-    max_x = max(xs) + pad
-    min_y = min(ys) - pad
-    max_y = max(ys) + pad
-
-    min_tile_x = int(min_x // TILE_SIZE)
-    max_tile_x = int(max_x // TILE_SIZE)
-    min_tile_y = int(min_y // TILE_SIZE)
-    max_tile_y = int(max_y // TILE_SIZE)
-
-    world_tile_count = 2 ** zoom
-
-    width = (max_tile_x - min_tile_x + 1) * TILE_SIZE
-    height = (max_tile_y - min_tile_y + 1) * TILE_SIZE
-    canvas = Image.new("RGB", (width, height), "white")
-
-    for tile_x in range(min_tile_x, max_tile_x + 1):
-        for tile_y in range(min_tile_y, max_tile_y + 1):
-            wrapped_x = tile_x % world_tile_count
-            if tile_y < 0 or tile_y >= world_tile_count:
-                continue
-
-            try:
-                tile = download_tile(zoom, wrapped_x, tile_y)
-                px = (tile_x - min_tile_x) * TILE_SIZE
-                py = (tile_y - min_tile_y) * TILE_SIZE
-                canvas.paste(tile, (px, py))
-            except Exception:
-                pass
-
-    draw = ImageDraw.Draw(canvas)
-
-    pixel_points = []
-    for lat, lon in coords:
-        wx, wy = latlon_to_world_pixels(lat, lon, zoom)
-        px = wx - min_tile_x * TILE_SIZE
-        py = wy - min_tile_y * TILE_SIZE
-        pixel_points.append((px, py))
-
-    if len(pixel_points) > 1:
-        draw.line(pixel_points, fill=(0, 102, 255), width=4)
-
-    for i, (px, py) in enumerate(pixel_points):
-        if len(pixel_points) == 1:
-            color = (220, 0, 0)
-            r = 8
-            draw.ellipse((px - r, py - r, px + r, py + r), fill=color, outline="white", width=2)
-        else:
-            if i == 0:
-                color = (0, 170, 0)
-                label = "S"
-            elif i == len(pixel_points) - 1:
-                color = (220, 0, 0)
-                label = "F"
-            else:
-                color = (0, 102, 255)
-                label = None
-
-            r = 8
-            draw.ellipse((px - r, py - r, px + r, py + r), fill=color, outline="white", width=2)
-
-            if label:
-                draw.rectangle((px + 10, py - 12, px + 28, py + 10), fill="white", outline=color, width=2)
-                draw.text((px + 15, py - 10), label, fill=color)
-
-    out = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-    canvas.save(out.name, "PNG")
-    out.close()
-    return out.name
-
-
 # ---------------- DOCX ----------------
-def read_docx_text_from_bytes(file_bytes):
+def read_docx(file_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
         tmp.write(file_bytes)
-        tmp_path = tmp.name
+        path = tmp.name
 
-    doc = Document(tmp_path)
+    doc = Document(path)
     lines = []
 
     for p in doc.paragraphs:
@@ -510,95 +250,84 @@ def read_docx_text_from_bytes(file_bytes):
         for row in table.rows:
             row_cells = []
             for cell in row.cells:
-                cell_text = " ".join(
-                    p.text.strip() for p in cell.paragraphs if p.text.strip()
-                ).strip()
+                cell_text = " ".join(p.text.strip() for p in cell.paragraphs if p.text.strip()).strip()
                 if cell_text:
                     row_cells.append(cell_text)
             if row_cells:
                 lines.append(" | ".join(row_cells))
 
-    return "\n".join(lines).strip(), tmp_path
+    return "\n".join(lines)
 
 
-def extract_notice_payload(doc_text):
-    notice_no = "N/A"
+def extract_notice(doc_text):
+    notice = "N/A"
     start = "N/A"
     valid = "N/A"
 
-    m = re.search(r'No\.\s*(\d+\s*/\s*\d+)', doc_text, re.IGNORECASE)
+    m = re.search(r'No\.\s*(\d+\s*/\s*\d+)', doc_text, re.I)
     if m:
-        notice_no = m.group(1).strip()
+        notice = m.group(1).strip()
 
-    m = re.search(
-        r'Start[:\s]*([\d/]+).*?VALID[:\s]*([\d/]+)',
-        doc_text,
-        re.IGNORECASE | re.DOTALL
-    )
+    m = re.search(r'Start[:\s]*([\d/]+).*?VALID[:\s]*([\d/]+)', doc_text, re.I | re.S)
     if m:
         start = m.group(1).strip()
         valid = m.group(2).strip()
     else:
-        m_start = re.search(r'Start[:\s]*([\d/]+)', doc_text, re.IGNORECASE)
+        m_start = re.search(r'Start[:\s]*([\d/]+)', doc_text, re.I)
         if m_start:
             start = m_start.group(1).strip()
 
-        m_valid = re.search(r'Valid[:\s]*([\d/]+)', doc_text, re.IGNORECASE)
+        m_valid = re.search(r'Valid[:\s]*([\d/]+)', doc_text, re.I)
         if m_valid:
             valid = m_valid.group(1).strip()
 
-    body_lines = []
+    body = []
     skip_next_no = False
 
     for line in doc_text.splitlines():
-        line_clean = line.strip()
-        if not line_clean:
+        l = line.strip()
+        if not l:
             continue
 
-        compact = re.sub(r'\s+', '', line_clean).lower()
+        compact = re.sub(r'\s+', '', l).lower()
 
         if "notice" in compact and "mariner" in compact:
             skip_next_no = True
             continue
 
-        if skip_next_no and re.match(r'^no\.\s*\d+\s*/\s*\d+', line_clean, re.IGNORECASE):
+        if skip_next_no and re.match(r'^no\.\s*\d+\s*/\s*\d+', l, re.I):
             skip_next_no = False
             continue
 
-        if re.match(r'^start[:\s]', line_clean, re.IGNORECASE):
+        if re.match(r'^start[:\s]', l, re.I):
             continue
 
-        if "valid" in line_clean.lower() and re.search(r'\d{2}/\d{2}/\d{4}', line_clean):
+        if "valid" in l.lower() and re.search(r'\d{2}/\d{2}/\d{4}', l):
             continue
 
-        body_lines.append(line_clean)
-
-    body = "\n".join(body_lines).strip()
+        body.append(l)
 
     return {
-        "notice_no": notice_no,
+        "notice": notice,
         "start": start,
         "valid": valid,
-        "body": body if body else "N/A"
+        "body": "\n".join(body).strip() or "N/A"
     }
 
 
-def build_html_message(payload):
-    status_icon = get_status_icon(payload["valid"])
-    notice_no = html_escape(payload["notice_no"])
-    start = html_escape(payload["start"])
-    valid = html_escape(payload["valid"])
+def build_message(payload):
+    icon = get_status_icon(payload["valid"])
     body = add_coordinate_links(payload["body"])
 
     return (
-        f"{status_icon} <b>Notice to mariner No:</b> {notice_no}\n"
-        f"<b>Start:</b> {start}\n"
-        f"<b>Valid:</b> {valid}\n\n"
+        f"{icon} <b>Notice to mariner No:</b> {html_escape(payload['notice'])}\n"
+        f"<b>Start:</b> {html_escape(payload['start'])}\n"
+        f"<b>Valid:</b> {html_escape(payload['valid'])}\n\n"
         f"{body}"
     )
 
 
-# ---------------- GMAIL CORE ----------------
+# ---------------- GMAIL ----------------
 def connect_gmail():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
@@ -606,7 +335,63 @@ def connect_gmail():
     return mail
 
 
-def fetch_recent_matching_emails(limit=100):
+def message_matches(msg):
+    from_header = decode_mime_words(msg.get("From", ""))
+    subject = decode_mime_words(msg.get("Subject", ""))
+    msg_id = normalize_message_id(msg)
+
+    if not msg_id:
+        return None
+
+    if SENDER.lower() not in from_header.lower():
+        return None
+
+    if SUBJECT_KEYWORD.lower() not in subject.lower():
+        return None
+
+    return {
+        "msg": msg,
+        "id": msg_id,
+        "from": from_header,
+        "subject": subject
+    }
+
+
+def fetch_latest_matching_email():
+    mail = connect_gmail()
+    result, data = mail.search(None, "ALL")
+
+    if result != "OK":
+        mail.logout()
+        return None
+
+    ids = data[0].split()
+    if not ids:
+        mail.logout()
+        return None
+
+    tail_ids = ids[-TAIL_SCAN_LIMIT:]
+
+    for num in reversed(tail_ids):
+        result, msg_data = mail.fetch(num, "(RFC822)")
+        if result != "OK" or not msg_data or not msg_data[0]:
+            continue
+
+        raw_bytes = msg_data[0][1]
+        if not raw_bytes:
+            continue
+
+        msg = email.message_from_bytes(raw_bytes)
+        entry = message_matches(msg)
+        if entry:
+            mail.logout()
+            return entry
+
+    mail.logout()
+    return None
+
+
+def fetch_recent_matching_emails():
     mail = connect_gmail()
     result, data = mail.search(None, "ALL")
 
@@ -619,9 +404,10 @@ def fetch_recent_matching_emails(limit=100):
         mail.logout()
         return []
 
-    matched = []
+    tail_ids = ids[-TAIL_SCAN_LIMIT:]
+    messages = []
 
-    for num in reversed(ids[-limit:]):
+    for num in reversed(tail_ids):
         result, msg_data = mail.fetch(num, "(RFC822)")
         if result != "OK" or not msg_data or not msg_data[0]:
             continue
@@ -631,76 +417,45 @@ def fetch_recent_matching_emails(limit=100):
             continue
 
         msg = email.message_from_bytes(raw_bytes)
-
-        from_header = decode_mime_words(msg.get("From", ""))
-        subject = decode_mime_words(msg.get("Subject", ""))
-        msg_id = normalize_message_id(msg)
-
-        if not msg_id:
-            continue
-
-        if SENDER.lower() not in from_header.lower():
-            continue
-
-        if SUBJECT_KEYWORD.lower() not in subject.lower():
-            continue
-
-        matched.append({
-            "imap_num": num,
-            "msg": msg,
-            "msg_id": msg_id,
-            "subject": subject,
-            "from": from_header,
-        })
+        entry = message_matches(msg)
+        if entry:
+            messages.append(entry)
 
     mail.logout()
-    return matched
+    return messages
 
 
-def extract_docx_attachment_bytes(msg):
+def extract_docx(msg):
     for part in msg.walk():
-        content_disposition = str(part.get("Content-Disposition", "")).lower()
         filename = part.get_filename()
         filename = decode_mime_words(filename) if filename else ""
         content_type = (part.get_content_type() or "").lower()
 
-        if "attachment" in content_disposition or filename:
-            if (
-                filename.lower().endswith(".docx")
-                or content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                or (content_type == "application/octet-stream" and filename.lower().endswith(".docx"))
-            ):
-                file_bytes = part.get_payload(decode=True)
-                if file_bytes:
-                    return file_bytes, filename or "notice_to_mariner.docx"
+        if (
+            filename.lower().endswith(".docx")
+            or content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            or (content_type == "application/octet-stream" and filename.lower().endswith(".docx"))
+        ):
+            file_bytes = part.get_payload(decode=True)
+            if file_bytes:
+                return file_bytes
 
-    return None, None
-
-
-def get_latest_matching_email():
-    matched = fetch_recent_matching_emails(limit=150)
-    if not matched:
-        return None
-    return matched[0]
+    return None
 
 
-def send_notice_to_chat(bot, chat_id, payload):
-    coords = extract_coordinates(payload["body"])
-    map_path = None
+def process_entry(bot, chat_id, entry):
+    msg = entry["msg"]
+    file_bytes = extract_docx(msg)
 
-    try:
-        if coords:
-            map_path = render_map_image(coords)
-    except Exception as e:
-        print("Map render error:", e)
+    if not file_bytes:
+        bot.send_message(chat_id=chat_id, text="DOCX attachment not found.")
+        return False
 
-    if map_path and os.path.exists(map_path):
-        with open(map_path, "rb") as img:
-            bot.send_photo(chat_id=chat_id, photo=img)
+    text = read_docx(file_bytes)
+    payload = extract_notice(text)
+    message = build_message(payload)
 
-    html_msg = build_html_message(payload)
-
-    for chunk in split_html_message(html_msg):
+    for chunk in split_html_message(message):
         bot.send_message(
             chat_id=chat_id,
             text=chunk,
@@ -708,95 +463,61 @@ def send_notice_to_chat(bot, chat_id, payload):
             disable_web_page_preview=True
         )
 
-
-def process_message_entry(bot, chat_id, entry):
-    msg = entry["msg"]
-    file_bytes, filename = extract_docx_attachment_bytes(msg)
-
-    if not file_bytes:
-        bot.send_message(chat_id=chat_id, text="DOCX attachment not found in latest matching email.")
-        return False
-
-    doc_text, _tmp_docx_path = read_docx_text_from_bytes(file_bytes)
-    payload = extract_notice_payload(doc_text)
-    send_notice_to_chat(bot, chat_id, payload)
     return True
 
 
+# ---------------- AUTO CHECK ----------------
 def initialize_gmail_cache_silently():
     if cache.get("gmail_initialized"):
         return
 
-    latest = get_latest_matching_email()
-    if latest and latest["msg_id"] not in cache["gmail"]:
-        cache["gmail"].append(latest["msg_id"])
+    latest = fetch_latest_matching_email()
+    if latest and latest["id"] not in cache["gmail"]:
+        cache["gmail"].append(latest["id"])
 
     cache["gmail_initialized"] = True
     save_cache(cache)
 
 
-def auto_check_gmail(updater):
+def auto_check(updater):
     try:
         initialize_gmail_cache_silently()
+        messages = fetch_recent_matching_emails()
 
-        matched = fetch_recent_matching_emails(limit=150)
-        if not matched:
-            return
-
-        new_entries = []
-        seen_ids = set(cache["gmail"])
-
-        for entry in reversed(matched):
-            if entry["msg_id"] not in seen_ids:
-                new_entries.append(entry)
-
-        for entry in new_entries:
-            if not CHAT_ID:
+        for m in reversed(messages):
+            if m["id"] in cache["gmail"]:
                 continue
 
-            ok = process_message_entry(updater.bot, CHAT_ID, entry)
-            cache["gmail"].append(entry["msg_id"])
+            ok = process_entry(updater.bot, CHAT_ID, m)
+            cache["gmail"].append(m["id"])
 
             if ok:
                 save_cache(cache)
 
-        if new_entries:
-            save_cache(cache)
-
     except Exception as e:
-        print("Gmail auto-check error:", e)
+        print("Gmail error:", e)
 
 
 # ---------------- COMMANDS ----------------
+def checkgovil(update, context):
+    latest = fetch_latest_matching_email()
+
+    if not latest:
+        update.message.reply_text("No messages")
+        return
+
+    process_entry(context.bot, update.message.chat.id, latest)
+
+
 def testbot(update, context):
-    update.message.reply_text("✅ Bot running")
-
-
-def get_chat_id_cmd(update, context):
-    update.message.reply_text(f"Chat ID: {update.message.chat.id}")
+    update.message.reply_text("Bot running")
 
 
 def clearcache(update, context):
     cache["gmail"] = []
     cache["gmail_initialized"] = False
     save_cache(cache)
-    update.message.reply_text("✅ Gmail cache cleared")
-
-
-def checkgovil(update, context):
-    try:
-        latest = get_latest_matching_email()
-        if not latest:
-            update.message.reply_text("No matching emails found.")
-            return
-
-        ok = process_message_entry(context.bot, update.message.chat.id, latest)
-        if not ok:
-            return
-
-    except Exception as e:
-        print("checkgovil error:", e)
-        update.message.reply_text(f"Error: {e}")
+    update.message.reply_text("Cache cleared")
 
 
 # ---------------- MAIN ----------------
@@ -804,19 +525,15 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    dp.add_handler(CommandHandler("testbot", testbot))
-    dp.add_handler(CommandHandler("getid", get_chat_id_cmd))
-    dp.add_handler(CommandHandler("clearcache", clearcache))
     dp.add_handler(CommandHandler("checkgovil", checkgovil))
+    dp.add_handler(CommandHandler("testbot", testbot))
+    dp.add_handler(CommandHandler("clearcache", clearcache))
 
     updater.start_polling()
     print("BOT STARTED")
 
     while True:
-        try:
-            auto_check_gmail(updater)
-        except Exception as e:
-            print("Auto check error:", e)
+        auto_check(updater)
         time.sleep(CHECK_INTERVAL)
 
 
