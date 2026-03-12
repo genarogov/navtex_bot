@@ -9,361 +9,203 @@ from telegram.ext import Updater, CommandHandler
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
 CACHE_FILE = "cache.json"
-CHECK_INTERVAL = 1800
+CHECK_INTERVAL = 1800  # 30 минут
 
-SEALAGOM_URL = "https://www.sealagom.com/navarea/3/"
+SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
 RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 
-ZONES = ["TAURUS","DELTA","CRUSADE"]
+ZONES = ["TAURUS", "DELTA", "CRUSADE"]
 
 # ---------------- CACHE ----------------
-
 def load_cache():
-
     if not os.path.exists(CACHE_FILE):
-
         return {
             "sealagom": [],
             "gov": {"last_number": "019", "year": "2026", "last_format": "_"},
             "rss": []
         }
-
     with open(CACHE_FILE) as f:
         return json.load(f)
 
-
 def save_cache(data):
-
     with open(CACHE_FILE, "w") as f:
         json.dump(data, f)
-
 
 cache = load_cache()
 
 # ---------------- COORDINATES ----------------
-
 def convert_to_decimal(deg, minutes, direction):
-
     value = float(deg) + float(minutes)/60
-
-    if direction in ["S","W"]:
+    if direction in ["S", "W"]:
         value = -value
-
     return value
 
-
 def add_coordinate_links(text):
-
-    coord_pattern = re.compile(
-        r'(\d{1,3})[°\-\s]+(\d{1,2}\.\d+)\s*([NSEW])',
-        re.IGNORECASE
-    )
-
+    coord_pattern = re.compile(r'(\d{1,3})[°\-\s]+(\d{1,2}\.\d+)\s*([NSEW])', re.IGNORECASE)
     coords = list(coord_pattern.finditer(text))
-
     replacements = []
-
     i = 0
-
-    while i < len(coords)-1:
-
+    while i < len(coords) - 1:
         lat = coords[i]
-        lon = coords[i+1]
-
-        if lat.group(3).upper() in ["N","S"] and lon.group(3).upper() in ["E","W"]:
-
-            lat_val = convert_to_decimal(
-                lat.group(1),
-                lat.group(2),
-                lat.group(3).upper()
-            )
-
-            lon_val = convert_to_decimal(
-                lon.group(1),
-                lon.group(2),
-                lon.group(3).upper()
-            )
-
+        lon = coords[i + 1]
+        if lat.group(3).upper() in ["N", "S"] and lon.group(3).upper() in ["E", "W"]:
+            lat_val = convert_to_decimal(lat.group(1), lat.group(2), lat.group(3).upper())
+            lon_val = convert_to_decimal(lon.group(1), lon.group(2), lon.group(3).upper())
             start = lat.start()
             end = lon.end()
-
             original = text[start:end]
-
             link = f"https://maps.google.com/?q={lat_val},{lon_val}"
-
             html = f'<a href="{link}">{original}</a>'
-
-            replacements.append((start,end,html))
-
+            replacements.append((start, end, html))
             i += 2
-
         else:
-
             i += 1
-
-    for start,end,html in reversed(replacements):
-
+    for start, end, html in reversed(replacements):
         text = text[:start] + html + text[end:]
-
     return text
 
-
 # ---------------- SEALAGOM ----------------
-
 def fetch_sealagom():
-
     try:
-
         r = requests.get(SEALAGOM_URL, timeout=20)
-
         soup = BeautifulSoup(r.text, "html.parser")
 
+        # ищем pre или весь текст страницы
         pre = soup.find("pre")
+        if pre:
+            text = pre.get_text("\n")
+        else:
+            text = soup.get_text("\n")
 
-        if not pre:
-            return []
-
-        text = pre.get_text("\n")
-
+        # разбиваем по NAVAREA III
         raw_msgs = re.split(r"\n(?=NAVAREA III -)", text)
-
         messages = []
 
         for m in raw_msgs:
-
             m = m.strip()
-
             if len(m) > 50:
                 messages.append(m)
 
-        return messages
+        return messages[:5]  # для теста первые 5 сообщений
 
     except Exception as e:
-
         print("Sealagom fetch error:", e)
-
         return []
 
-
 def send_sealagom(updater):
-
     messages = fetch_sealagom()
-
-    for m in messages:
-
-        num_match = re.search(r"NAVAREA III - (\d+/\d+)", m)
-
-        if not num_match:
-            continue
-
-        msg_id = num_match.group(1)
-
-        if msg_id in cache["sealagom"]:
-            continue
-
+    new_msgs = [m for m in messages if m not in cache["sealagom"]]
+    for m in new_msgs:
         msg = add_coordinate_links(m[:3500])
-
-        updater.bot.send_message(
-            CHAT_ID,
-            msg,
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
-
-        cache["sealagom"].append(msg_id)
-
-    save_cache(cache)
-
+        updater.bot.send_message(CHAT_ID, msg, parse_mode="HTML", disable_web_page_preview=True)
+        cache["sealagom"].append(m)
+    if new_msgs:
+        save_cache(cache)
 
 def test(update, context):
-
     messages = fetch_sealagom()
-
     if not messages:
-
         update.message.reply_text("No Sealagom messages")
         return
-
-    for m in messages[:5]:
-
+    for m in messages:
         msg = add_coordinate_links(m[:3500])
-
-        update.message.reply_text(
-            msg,
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
-
+        update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
 
 # ---------------- GOV ----------------
-
 def page_exists(url):
-
     try:
-
         r = requests.get(url, timeout=10)
-
         return r.status_code == 200
-
     except:
-
         return False
 
-
 def find_latest_gov(last_number, year, fmt):
-
     low = int(last_number)
     high = 300
-
     latest = low
-
     while low <= high:
-
         mid = (low + high) // 2
-
         num = f"{mid:03d}"
-
         url = f"https://www.gov.il/en/pages/mariners{fmt}{num}{fmt}{year}"
-
         if page_exists(url):
-
             latest = mid
             low = mid + 1
-
         else:
-
             high = mid - 1
-
     return latest
 
-
 def testgov(update, context):
-
     last_number = cache["gov"]["last_number"]
     year = cache["gov"]["year"]
     fmt = cache["gov"]["last_format"]
-
     latest = find_latest_gov(last_number, year, fmt)
-
     url = f"https://www.gov.il/en/pages/mariners{fmt}{latest:03d}{fmt}{year}"
-
     update.message.reply_text(f"Last message from GOV.il: {url}")
 
-
 # ---------------- METAREA ----------------
-
 def get_metarea():
-
-    r = requests.get(METAREA_URL,timeout=20)
-
-    soup = BeautifulSoup(r.text,"html.parser")
-
+    r = requests.get(METAREA_URL, timeout=20)
+    soup = BeautifulSoup(r.text, "html.parser")
     text = soup.get_text()
-
-    issued = re.search(
-        r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC",
-        text
-    )
-
+    issued = re.search(r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC", text)
     issued = issued.group(0) if issued else "N/A"
-
     start = text.find("TAURUS")
     end = text.find("KASTELLORIZO SEA")
-
     forecast = text[start:end]
-
-    blocks=[]
-
-    for i,zone in enumerate(ZONES):
-
+    blocks = []
+    for i, zone in enumerate(ZONES):
         s = forecast.find(zone)
-
-        if s==-1:
+        if s == -1:
             continue
-
-        nxt=[forecast.find(z,s+1) for z in ZONES[i+1:]]
-
-        nxt=[n for n in nxt if n!=-1]
-
-        e=min(nxt) if nxt else len(forecast)
-
-        txt=forecast[s:e].strip()
-
+        nxt = [forecast.find(z, s + 1) for z in ZONES[i + 1:]]
+        nxt = [n for n in nxt if n != -1]
+        e = min(nxt) if nxt else len(forecast)
+        txt = forecast[s:e].strip()
         if txt.startswith(zone):
-            txt=txt[len(zone):].lstrip()
-
+            txt = txt[len(zone):].lstrip()
         blocks.append(f"📍 {zone}\n{txt}")
-
     msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
-
     return msg[:4000]
 
-
-def metarea(update,context):
-
+def metarea(update, context):
     update.message.reply_text(get_metarea())
 
-
 # ---------------- RSS ----------------
-
 def send_rss(updater):
-
     feed = feedparser.parse(RSS_URL)
-
     new_entries = [e for e in feed.entries if e.link not in cache["rss"]]
-
     for e in new_entries:
-
         msg = f"RSS GOV IL: {e.title}\n{e.link}"
-
         updater.bot.send_message(CHAT_ID, msg)
-
         cache["rss"].append(e.link)
-
     if new_entries:
         save_cache(cache)
 
-
 # ---------------- TESTBOT ----------------
-
 def testbot(update, context):
-
     update.message.reply_text("✅ Bot running")
 
-
 # ---------------- MAIN ----------------
-
 def main():
-
     updater = Updater(TOKEN)
-
     dp = updater.dispatcher
-
     dp.add_handler(CommandHandler("testbot", testbot))
     dp.add_handler(CommandHandler("test", test))
     dp.add_handler(CommandHandler("testgov", testgov))
     dp.add_handler(CommandHandler("metarea", metarea))
 
     updater.start_polling()
-
     print("BOT STARTED")
 
     while True:
-
         try:
-
             send_sealagom(updater)
             send_rss(updater)
-
         except Exception as e:
-
             print("Auto check error:", e)
-
         time.sleep(CHECK_INTERVAL)
 
-
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
