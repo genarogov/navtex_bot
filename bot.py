@@ -12,7 +12,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 CACHE_FILE = "cache.json"
 CHECK_INTERVAL = 1800
 
-SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
+SEALAGOM_URL = "https://www.sealagom.com/navarea/3/"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
 RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 
