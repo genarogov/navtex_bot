@@ -3,7 +3,6 @@ import re
 import time
 import json
 import requests
-import feedparser
 from bs4 import BeautifulSoup
 from telegram.ext import Updater, CommandHandler
 
@@ -14,7 +13,6 @@ CHECK_INTERVAL = 1800
 
 SEALAGOM_URL = "https://www.sealagom.com/navarea/3/"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
-RSS_URL = "https://www.gov.il/he/Departments/Rss/NoticeToMariners"
 
 ZONES = ["TAURUS","DELTA","CRUSADE"]
 
@@ -23,8 +21,7 @@ def load_cache():
     if not os.path.exists(CACHE_FILE):
         return {
             "sealagom": [],
-            "gov": {"last_number": "019", "year": "2026", "last_format": "_"},
-            "rss": []
+            "gov": {"last_number": "019", "year": "2026", "last_format": "_"}
         }
     with open(CACHE_FILE) as f:
         return json.load(f)
@@ -89,6 +86,7 @@ def fetch_sealagom_full():
             if len(clean) > 30:
                 messages.append((number, clean))
 
+        # сортируем по номеру для правильной проверки новизны
         messages.sort(key=lambda x: x[0])
         return messages
 
@@ -120,14 +118,16 @@ def send_new_sealagom(updater):
 
 def test(update, context):
     """
-    Показывает 5 последних сообщений (без проверки кэша)
+    Показывает 5 новейших сообщений (по номеру)
     """
     messages = fetch_sealagom_full()
     if not messages:
         update.message.reply_text("No Sealagom messages")
         return
 
-    for number, msg_text in messages[-5:]:
+    # сортируем по номеру убыванию, чтобы новейшие были первыми
+    messages_sorted = sorted(messages, key=lambda x: x[0], reverse=True)
+    for number, msg_text in messages_sorted[:5]:
         msg = add_coordinate_links(msg_text[:3500])
         update.message.reply_text(
             msg,
@@ -164,7 +164,8 @@ def testgov(update, context):
     fmt = cache["gov"]["last_format"]
     latest = find_latest_gov(last_number, year, fmt)
     url = f"https://www.gov.il/en/pages/mariners{fmt}{latest:03d}{fmt}{year}"
-    update.message.reply_text(f"Last message from GOV.il: {url}")
+    # ссылка на новой строке после двоеточия
+    update.message.reply_text(f"Last message from GOV.il:\n{url}")
 
 # ---------------- METAREA ----------------
 def get_metarea():
@@ -194,17 +195,6 @@ def get_metarea():
 def metarea(update,context):
     update.message.reply_text(get_metarea())
 
-# ---------------- RSS ----------------
-def send_rss(updater):
-    feed = feedparser.parse(RSS_URL)
-    new_entries = [e for e in feed.entries if e.link not in cache["rss"]]
-    for e in new_entries:
-        msg = f"RSS GOV IL: {e.title}\n{e.link}"
-        updater.bot.send_message(CHAT_ID, msg)
-        cache["rss"].append(e.link)
-    if new_entries:
-        save_cache(cache)
-
 # ---------------- TESTBOT ----------------
 def testbot(update, context):
     update.message.reply_text("✅ Bot running")
@@ -224,7 +214,6 @@ def main():
     while True:
         try:
             send_new_sealagom(updater)
-            send_rss(updater)
         except Exception as e:
             print("Auto check error:", e)
         time.sleep(CHECK_INTERVAL)
