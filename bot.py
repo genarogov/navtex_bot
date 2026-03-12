@@ -9,7 +9,6 @@ import textwrap
 from email.header import decode_header
 
 from telegram.ext import Updater, CommandHandler
-from telegram.constants import ParseMode
 from docx import Document
 from PIL import Image, ImageDraw, ImageFont
 
@@ -22,7 +21,6 @@ EMAIL_PASS = os.getenv("EMAIL_PASS")
 # ---------------- CACHE ----------------
 CACHE_FILE = "cache.json"
 CHECK_INTERVAL = 1800  # 30 min
-
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
@@ -48,18 +46,15 @@ def load_cache():
             "gmail_initialized": False
         }
 
-
 def save_cache(data):
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
 
 cache = load_cache()
 
 # ---------------- GMAIL SETTINGS ----------------
 SENDER = "benzviy.mot.gov.il@send.vpcontact.com"
 SUBJECT_KEYWORD = "notice to mariner"
-
 
 # ---------------- HELPERS ----------------
 def html_escape(text):
@@ -71,7 +66,6 @@ def html_escape(text):
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-
 
 def decode_mime_words(value):
     if not value:
@@ -86,11 +80,9 @@ def decode_mime_words(value):
 
     return "".join(decoded_parts).strip()
 
-
 def normalize_message_id(msg):
     raw = (msg.get("Message-ID") or "").strip()
     return raw.strip("<>").strip().lower()
-
 
 def split_html_message(text, limit=3500):
     parts = []
@@ -108,7 +100,6 @@ def split_html_message(text, limit=3500):
 
     return parts
 
-
 # ---------------- COORDINATES ----------------
 def dms_to_decimal(deg, minutes, seconds, direction):
     value = float(deg) + float(minutes) / 60.0 + float(seconds) / 3600.0
@@ -116,20 +107,17 @@ def dms_to_decimal(deg, minutes, seconds, direction):
         value = -value
     return value
 
-
 def dm_to_decimal(deg, minutes, direction):
     value = float(deg) + float(minutes) / 60.0
     if direction.upper() in ("S", "W"):
         value = -value
     return value
 
-
 def decimal_signed(value, direction):
     val = float(value)
     if direction.upper() in ("S", "W"):
         return -abs(val)
     return abs(val)
-
 
 def replace_coordinate_pairs(text, pattern, parser):
     matches = list(pattern.finditer(text))
@@ -149,7 +137,6 @@ def replace_coordinate_pairs(text, pattern, parser):
         text = text[:start] + repl + text[end:]
 
     return text
-
 
 def add_coordinate_links(text):
     if not text:
@@ -255,7 +242,6 @@ def add_coordinate_links(text):
 
     return safe
 
-
 # ---------------- DOCX ----------------
 def read_docx_text_from_bytes(file_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
@@ -284,7 +270,6 @@ def read_docx_text_from_bytes(file_bytes):
 
     return "\n".join(lines).strip(), tmp_path
 
-
 def find_field(text, labels):
     for label in labels:
         pattern = re.compile(rf'(?im)^\s*{label}\s*[:\-]?\s*(.+?)\s*$')
@@ -292,7 +277,6 @@ def find_field(text, labels):
         if m:
             return m.group(1).strip()
     return ""
-
 
 def extract_notice_payload(doc_text):
     notice_no = find_field(doc_text, [
@@ -348,7 +332,6 @@ def extract_notice_payload(doc_text):
         "body": body or "N/A"
     }
 
-
 def render_text_image(payload):
     text = (
         f"Notice to mariner No: {payload['notice_no']}\n"
@@ -393,7 +376,6 @@ def render_text_image(payload):
     tmp.close()
     return tmp.name
 
-
 def build_html_message(payload):
     notice_no = html_escape(payload["notice_no"])
     start = html_escape(payload["start"])
@@ -407,14 +389,12 @@ def build_html_message(payload):
         f"{body}"
     )
 
-
 # ---------------- GMAIL CORE ----------------
 def connect_gmail():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
     mail.select("inbox")
     return mail
-
 
 def fetch_recent_matching_emails(limit=100):
     mail = connect_gmail()
@@ -436,7 +416,11 @@ def fetch_recent_matching_emails(limit=100):
         if result != "OK" or not msg_data or not msg_data[0]:
             continue
 
-        msg = email.message_from_bytes(msg_data[0][1])
+        raw_bytes = msg_data[0][1]
+        if not raw_bytes:
+            continue
+
+        msg = email.message_from_bytes(raw_bytes)
 
         from_header = decode_mime_words(msg.get("From", ""))
         subject = decode_mime_words(msg.get("Subject", ""))
@@ -462,7 +446,6 @@ def fetch_recent_matching_emails(limit=100):
     mail.logout()
     return matched
 
-
 def extract_docx_attachment_bytes(msg):
     for part in msg.walk():
         content_disposition = str(part.get("Content-Disposition", "")).lower()
@@ -476,17 +459,17 @@ def extract_docx_attachment_bytes(msg):
                 or content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 or (content_type == "application/octet-stream" and filename.lower().endswith(".docx"))
             ):
-                return part.get_payload(decode=True), filename or "notice_to_mariner.docx"
+                file_bytes = part.get_payload(decode=True)
+                if file_bytes:
+                    return file_bytes, filename or "notice_to_mariner.docx"
 
     return None, None
-
 
 def get_latest_matching_email():
     matched = fetch_recent_matching_emails(limit=150)
     if not matched:
         return None
     return matched[0]
-
 
 def send_notice_to_chat(bot, chat_id, payload, image_path=None):
     html_msg = build_html_message(payload)
@@ -499,10 +482,9 @@ def send_notice_to_chat(bot, chat_id, payload, image_path=None):
         bot.send_message(
             chat_id=chat_id,
             text=chunk,
-            parse_mode=ParseMode.HTML,
+            parse_mode="HTML",
             disable_web_page_preview=True
         )
-
 
 def process_message_entry(bot, chat_id, entry):
     msg = entry["msg"]
@@ -519,7 +501,6 @@ def process_message_entry(bot, chat_id, entry):
     send_notice_to_chat(bot, chat_id, payload, image_path=image_path)
     return True
 
-
 def initialize_gmail_cache_silently():
     if cache.get("gmail_initialized"):
         return
@@ -530,7 +511,6 @@ def initialize_gmail_cache_silently():
 
     cache["gmail_initialized"] = True
     save_cache(cache)
-
 
 def auto_check_gmail(updater):
     try:
@@ -563,22 +543,18 @@ def auto_check_gmail(updater):
     except Exception as e:
         print("Gmail auto-check error:", e)
 
-
 # ---------------- COMMANDS ----------------
 def testbot(update, context):
     update.message.reply_text("✅ Bot running")
 
-
 def get_chat_id_cmd(update, context):
     update.message.reply_text(f"Chat ID: {update.message.chat.id}")
-
 
 def clearcache(update, context):
     cache["gmail"] = []
     cache["gmail_initialized"] = False
     save_cache(cache)
     update.message.reply_text("✅ Gmail cache cleared")
-
 
 def checkgovil(update, context):
     try:
@@ -594,7 +570,6 @@ def checkgovil(update, context):
     except Exception as e:
         print("checkgovil error:", e)
         update.message.reply_text(f"Error: {e}")
-
 
 # ---------------- MAIN ----------------
 def main():
@@ -615,7 +590,6 @@ def main():
         except Exception as e:
             print("Auto check error:", e)
         time.sleep(CHECK_INTERVAL)
-
 
 if __name__ == "__main__":
     main()
