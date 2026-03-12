@@ -67,23 +67,23 @@ def add_coordinate_links(text):
 
 # ---------------- SEALAGOM ----------------
 SEALAGOM_URL = "https://www.sealagom.com/navarea/3/messages/"
+
 def fetch_sealagom():
     try:
         r = requests.get(SEALAGOM_URL, timeout=20)
         soup = BeautifulSoup(r.text,"html.parser")
-        text = soup.get_text("\n")
-        raw_msgs = re.split(r"(?=NAVAREA III - \d{4}/\d{2})", text)
         messages = []
-        for m in raw_msgs:
-            m = m.strip()
-            if m and len(m) > 30:
-                messages.append(m)
-        return messages[:5]
+        # Берём все div с сообщениями (старый рабочий парсер)
+        for div in soup.find_all("div", class_="active-message"):
+            text = div.get_text("\n").strip()
+            if text.startswith("NAVAREA III -"):
+                messages.append(text)
+        return messages
     except Exception as e:
         print("Sealagom fetch error:", e)
         return []
 
-def send_sealagom(updater):
+def send_new_sealagom(updater):
     messages = fetch_sealagom()
     new_msgs = [m for m in messages if m not in cache["sealagom"]]
     for m in new_msgs:
@@ -95,10 +95,6 @@ def send_sealagom(updater):
         save_cache(cache)
 
 # ---------------- GOV ----------------
-GOV_LAST_NUMBER = "019"
-GOV_YEAR = "2026"
-GOV_LAST_FORMAT = "_"
-
 def page_exists(url):
     try:
         r = requests.get(url, timeout=10)
@@ -162,7 +158,7 @@ def send_metarea(updater):
     if CHAT_ID:
         updater.bot.send_message(CHAT_ID, get_metarea())
 
-# ---------------- GMAIL Gov.il Word ----------------
+# ---------------- GMAIL ----------------
 SENDER = "benzviy.mot.gov.il@send.vpcontact.com"
 SUBJECT_KEYWORD = "notice to mariner"
 
@@ -173,7 +169,7 @@ def process_gmail(updater):
         mail.select("inbox")
         result, data = mail.search(None, "ALL")
         mail_ids = data[0].split()
-        for num in mail_ids[-10:]:  # последние 10 писем
+        for num in mail_ids[-10:]:
             result, msg_data = mail.fetch(num, "(RFC822)")
             msg = email.message_from_bytes(msg_data[0][1])
             subject, encoding = decode_header(msg["Subject"])[0]
@@ -185,23 +181,18 @@ def process_gmail(updater):
                 continue
             if msg["Message-ID"] in cache["gmail"]:
                 continue
-            # Найдём attachment .docx
             for part in msg.walk():
                 if part.get_content_type() == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
                     filename = part.get_filename()
                     content = part.get_payload(decode=True)
                     with open(filename, "wb") as f:
                         f.write(content)
-                    # парсим текст
                     doc = Document(filename)
                     full_text = "\n".join([p.text for p in doc.paragraphs])
                     full_text = add_coordinate_links(full_text)
-                    # скрин через pdf2image
-                    # сначала конвертируем docx в pdf с помощью LibreOffice в будущем, но сейчас просто png через PIL
                     img = filename.replace(".docx",".png")
                     img_obj = Image.new("RGB",(800,1000),(255,255,255))
                     img_obj.save(img)
-                    # Отправка
                     if CHAT_ID:
                         updater.bot.send_message(CHAT_ID, f"{subject}\n\n{full_text}")
                         updater.bot.send_photo(CHAT_ID, photo=open(img,"rb"))
@@ -210,7 +201,7 @@ def process_gmail(updater):
     except Exception as e:
         print("Gmail error:", e)
 
-# ---------------- TEST ----------------
+# ---------------- TEST HANDLERS ----------------
 def test(update, context):
     messages = fetch_sealagom()
     if not messages:
@@ -234,7 +225,6 @@ def testgov(update, context):
 def metarea(update,context):
     update.message.reply_text(get_metarea())
 
-# ---------------- GET CHAT ID ----------------
 def get_chat_id_cmd(update, context):
     update.message.reply_text(f"Chat ID: {update.message.chat.id}")
 
@@ -243,21 +233,19 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Handlers
     dp.add_handler(CommandHandler("testbot", testbot))
     dp.add_handler(CommandHandler("test", test))
     dp.add_handler(CommandHandler("testgov", testgov))
     dp.add_handler(CommandHandler("metarea", metarea))
-    dp.add_handler(CommandHandler("getid", get_chat_id_cmd))  # временно
+    dp.add_handler(CommandHandler("getid", get_chat_id_cmd))
 
     updater.start_polling()
     print("BOT STARTED")
 
+    # Авто-проверка только для новых сообщений SEALAGOM и Gmail
     while True:
         try:
-            send_sealagom(updater)
-            send_gov_site(updater)
-            send_metarea(updater)
+            send_new_sealagom(updater)
             process_gmail(updater)
         except Exception as e:
             print("Auto check error:", e)
