@@ -3,27 +3,38 @@ import re
 import time
 import json
 import requests
+import imaplib
+import email
 from bs4 import BeautifulSoup
 from telegram.ext import Updater, CommandHandler
+from telegram import Bot
 from datetime import datetime
+from docx import Document
+from pdf2image import convert_from_path
 
+# ---------------- CONFIG ----------------
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-CACHE_FILE = "cache.json"
-CHECK_INTERVAL = 1800
+
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
+IMAP_SERVER = "imap.gmail.com"
 
 SEALAGOM_URL = "https://www.sealagom.com/navarea/3/"
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
 
+SENDER = "benzviy.mot.gov.il@send.vpcontact.com"
+SUBJECT_KEYWORD = "notice to mariner"
+
 ZONES = ["TAURUS","DELTA","CRUSADE"]
+CACHE_FILE = "cache.json"
+CHECK_INTERVAL = 1800  # 30 минут
 
 # ---------------- CACHE ----------------
 def load_cache():
     if not os.path.exists(CACHE_FILE):
-        return {
-            "sealagom": [],
-            "gov": {"last_number": "019", "year": "2026", "last_format": "_"}
-        }
+        return {"sealagom": [], "gov": {"last_number": "019","year":"2026","last_format":"_"},
+                "gov_mail": []}
     with open(CACHE_FILE) as f:
         return json.load(f)
 
@@ -66,79 +77,51 @@ def add_coordinate_links(text):
 
 # ---------------- SEALAGOM ----------------
 def fetch_sealagom_full():
-    """
-    Возвращает список сообщений с основной страницы SEALAGOM.
-    Каждый элемент — кортеж: (номер, текст, дата)
-    """
     try:
         r = requests.get(SEALAGOM_URL, timeout=20)
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(r.text,"html.parser")
         text = soup.get_text("\n")
-
         raw_msgs = re.split(r'\n(?=NAVAREA III - \d{4}/\d{2})', text)
         messages = []
-
         for m in raw_msgs:
             header_match = re.match(r'NAVAREA III - (\d{4}/\d{2})\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+\d{2}:\d{2}\s+UTC)', m)
             if not header_match:
                 continue
             number = header_match.group(1)
             date_str = header_match.group(2)
-            # конвертируем в datetime
             try:
                 msg_date = datetime.strptime(date_str, "%d %B %Y %H:%M UTC")
             except:
-                msg_date = datetime.min  # если не парсится, минимальная дата
+                msg_date = datetime.min
             clean = m.strip()
             if len(clean) > 30:
                 messages.append((number, clean, msg_date))
-
-        # сортируем по дате, новейшие первыми
         messages_sorted = sorted(messages, key=lambda x: x[2], reverse=True)
         return messages_sorted
-
     except Exception as e:
         print("Sealagom full fetch error:", e)
         return []
 
 def send_new_sealagom(updater):
-    """
-    Отправляет в чат только новые сообщения, которые ещё не были отправлены
-    """
     fetched = fetch_sealagom_full()
     new_messages = []
-
     for number, msg_text, msg_date in fetched:
         if number not in cache["sealagom"]:
             msg_with_links = add_coordinate_links(msg_text[:3500])
-            updater.bot.send_message(
-                CHAT_ID,
-                msg_with_links,
-                parse_mode="HTML",
-                disable_web_page_preview=True
-            )
+            updater.bot.send_message(CHAT_ID, msg_with_links, parse_mode="HTML", disable_web_page_preview=True)
             cache["sealagom"].append(number)
             new_messages.append(number)
-
     if new_messages:
         save_cache(cache)
 
 def test(update, context):
-    """
-    Показывает 5 новейших сообщений (по дате)
-    """
     messages = fetch_sealagom_full()
     if not messages:
         update.message.reply_text("No Sealagom messages")
         return
-
     for number, msg_text, msg_date in messages[:5]:
         msg = add_coordinate_links(msg_text[:3500])
-        update.message.reply_text(
-            msg,
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
+        update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
 
 # ---------------- GOV ----------------
 def page_exists(url):
@@ -169,7 +152,6 @@ def testgov(update, context):
     fmt = cache["gov"]["last_format"]
     latest = find_latest_gov(last_number, year, fmt)
     url = f"https://www.gov.il/en/pages/mariners{fmt}{latest:03d}{fmt}{year}"
-    # ссылка на новой строке после двоеточия
     update.message.reply_text(f"Last message from GOV.il:\n{url}")
 
 # ---------------- METAREA ----------------
@@ -185,20 +167,80 @@ def get_metarea():
     blocks=[]
     for i,zone in enumerate(ZONES):
         s = forecast.find(zone)
-        if s==-1:
-            continue
-        nxt=[forecast.find(z,s+1) for z in ZONES[i+1:]]
-        nxt=[n for n in nxt if n!=-1]
+        if s==-1: continue
+        nxt=[forecast.find(z,s+1) for z in ZONES[i+1:] if forecast.find(z,s+1)!=-1]
         e=min(nxt) if nxt else len(forecast)
         txt=forecast[s:e].strip()
-        if txt.startswith(zone):
-            txt=txt[len(zone):].lstrip()
+        if txt.startswith(zone): txt=txt[len(zone):].lstrip()
         blocks.append(f"📍 {zone}\n{txt}")
     msg = f"🕒 Issued: {issued}\n\n" + "\n\n".join(blocks)
     return msg[:4000]
 
 def metarea(update,context):
     update.message.reply_text(get_metarea())
+
+# ---------------- GOV MAIL ----------------
+def fetch_gov_emails():
+    mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+    mail.login(EMAIL_USER, EMAIL_PASS)
+    mail.select("inbox")
+    result, data = mail.search(None, f'(FROM "{SENDER}" SUBJECT "{SUBJECT_KEYWORD}")')
+    mail_ids = data[0].split()
+    downloaded_docs = []
+    for num in mail_ids:
+        if num.decode() in cache["gov_mail"]:  # уже обработано
+            continue
+        result, msg_data = mail.fetch(num, "(RFC822)")
+        raw_email = msg_data[0][1]
+        msg = email.message_from_bytes(raw_email)
+        if msg.get_content_maintype() != 'multipart': continue
+        for part in msg.walk():
+            if part.get_content_maintype() == 'multipart': continue
+            if part.get("Content-Disposition") is None: continue
+            filename = part.get_filename()
+            if filename and filename.lower().endswith((".doc", ".docx")):
+                save_path = os.path.join("downloads", filename)
+                os.makedirs("downloads", exist_ok=True)
+                with open(save_path, "wb") as f:
+                    f.write(part.get_payload(decode=True))
+                downloaded_docs.append((num.decode(), save_path))
+    mail.logout()
+    return downloaded_docs
+
+def parse_gov_word(doc_path):
+    doc = Document(doc_path)
+    full_text = "\n".join([p.text for p in doc.paragraphs])
+    number_match = re.search(r'Number[:\s]+(\S+)', full_text, re.IGNORECASE)
+    start_match = re.search(r'Start[:\s]+([\d/-]+)', full_text, re.IGNORECASE)
+    valid_match = re.search(r'Valid[:\s]+([\d/-]+)', full_text, re.IGNORECASE)
+    number = number_match.group(1) if number_match else "N/A"
+    start = start_match.group(1) if start_match else "N/A"
+    valid = valid_match.group(1) if valid_match else "N/A"
+    text_with_links = add_coordinate_links(full_text)
+    return number, start, valid, text_with_links
+
+def word_to_images(doc_path, output_dir="screenshots"):
+    if not os.path.exists(output_dir): os.makedirs(output_dir)
+    pdf_path = os.path.join(output_dir, os.path.basename(doc_path).replace(".docx",".pdf").replace(".doc",".pdf"))
+    os.system(f'libreoffice --headless --convert-to pdf "{doc_path}" --outdir "{output_dir}"')
+    pages = convert_from_path(pdf_path, dpi=200)
+    img_paths = []
+    for i, page in enumerate(pages):
+        img_file = os.path.join(output_dir, f"page_{i+1}.png")
+        page.save(img_file, "PNG")
+        img_paths.append(img_file)
+    return img_paths
+
+def send_gov_mail(updater):
+    docs = fetch_gov_emails()
+    for mail_id, doc_path in docs:
+        number, start, valid, text = parse_gov_word(doc_path)
+        updater.bot.send_message(CHAT_ID, f"Notice to mariner {number}\nStart: {start}\nValid: {valid}\n\n{text}", parse_mode="HTML")
+        images = word_to_images(doc_path)
+        for img in images:
+            updater.bot.send_photo(CHAT_ID, photo=open(img,"rb"))
+        cache["gov_mail"].append(mail_id)
+    if docs: save_cache(cache)
 
 # ---------------- TESTBOT ----------------
 def testbot(update, context):
@@ -219,6 +261,7 @@ def main():
     while True:
         try:
             send_new_sealagom(updater)
+            send_gov_mail(updater)
         except Exception as e:
             print("Auto check error:", e)
         time.sleep(CHECK_INTERVAL)
