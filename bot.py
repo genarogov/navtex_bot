@@ -4,6 +4,7 @@ import json
 import time
 import imaplib
 import email
+import threading
 from email.header import decode_header
 
 from telegram.ext import Updater, CommandHandler
@@ -11,89 +12,102 @@ from telegram.ext import Updater, CommandHandler
 from docx import Document
 from pdf2image import convert_from_path
 
-TOKEN=os.getenv("BOT_TOKEN")
-CHAT_ID=os.getenv("CHAT_ID")
 
-EMAIL_USER=os.getenv("EMAIL_USER")
-EMAIL_PASS=os.getenv("EMAIL_PASS")
+TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-SENDER="benzviy.mot.gov.il@send.vpcontact.com"
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
 
-CHECK_INTERVAL=1800
-CACHE_FILE="cache.json"
+SENDER = "benzviy.mot.gov.il@send.vpcontact.com"
+
+CACHE_FILE = "cache.json"
+
+CHECK_INTERVAL = 1800
+
 
 # ---------------- CACHE ----------------
 
 def load_cache():
 
     if not os.path.exists(CACHE_FILE):
-
-        return {"gmail":[]}
+        return {"gmail": []}
 
     with open(CACHE_FILE) as f:
-
         return json.load(f)
 
-def save_cache(c):
 
-    with open(CACHE_FILE,"w") as f:
+def save_cache():
 
-        json.dump(c,f)
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f)
 
-cache=load_cache()
+
+cache = load_cache()
+
 
 # ---------------- COORDINATES ----------------
 
-def coord_links(text):
+def convert_coords(match):
 
-    pattern=re.compile(
-    r'(\d{1,3})[^\d]+(\d{1,2}\.?\d*)\s*([NS])[^\d]+(\d{1,3})[^\d]+(\d{1,2}\.?\d*)\s*([EW])',
-    re.I)
+    lat_deg = float(match.group(1))
+    lat_min = float(match.group(2))
+    lat_dir = match.group(3)
 
-    def repl(m):
+    lon_deg = float(match.group(4))
+    lon_min = float(match.group(5))
+    lon_dir = match.group(6)
 
-        lat=float(m.group(1))+float(m.group(2))/60
-        lon=float(m.group(4))+float(m.group(5))/60
+    lat = lat_deg + lat_min / 60
+    lon = lon_deg + lon_min / 60
 
-        if m.group(3).upper()=="S":
-            lat=-lat
+    if lat_dir.upper() == "S":
+        lat = -lat
 
-        if m.group(6).upper()=="W":
-            lon=-lon
+    if lon_dir.upper() == "W":
+        lon = -lon
 
-        url=f"https://maps.google.com/?q={lat},{lon}"
+    link = f"https://maps.google.com/?q={lat},{lon}"
 
-        return f'<a href="{url}">{m.group(0)}</a>'
+    return f'<a href="{link}">{match.group(0)}</a>'
 
-    return pattern.sub(repl,text)
+
+def make_clickable(text):
+
+    pattern = re.compile(
+        r'(\d{1,3})[^\d]+(\d{1,2}\.?\d*)\s*([NS])[^\d]+(\d{1,3})[^\d]+(\d{1,2}\.?\d*)\s*([EW])',
+        re.I
+    )
+
+    return pattern.sub(convert_coords, text)
+
 
 # ---------------- GMAIL ----------------
 
 def check_gmail():
 
-    mail=imaplib.IMAP4_SSL("imap.gmail.com")
+    mail = imaplib.IMAP4_SSL("imap.gmail.com")
 
-    mail.login(EMAIL_USER,EMAIL_PASS)
+    mail.login(EMAIL_USER, EMAIL_PASS)
 
     mail.select("inbox")
 
-    status,data=mail.search(None,'ALL')
+    status, data = mail.search(None, "ALL")
 
-    ids=data[0].split()
+    ids = data[0].split()
 
-    ids=ids[-10:]
+    ids = ids[-50:]
 
     for i in ids[::-1]:
 
-        status,msg_data=mail.fetch(i,'(RFC822)')
+        status, msg_data = mail.fetch(i, "(RFC822)")
 
-        msg=email.message_from_bytes(msg_data[0][1])
+        msg = email.message_from_bytes(msg_data[0][1])
 
-        subject,enc=decode_header(msg["Subject"])[0]
+        subject, enc = decode_header(msg["Subject"])[0]
 
-        if isinstance(subject,bytes):
-
-            subject=subject.decode(enc or "utf8")
+        if isinstance(subject, bytes):
+            subject = subject.decode(enc or "utf-8")
 
         if SENDER not in msg["From"]:
             continue
@@ -101,48 +115,54 @@ def check_gmail():
         if "notice to mariner" not in subject.lower():
             continue
 
-        mid=msg["Message-ID"]
+        mid = msg["Message-ID"]
 
         if mid in cache["gmail"]:
             continue
 
         for part in msg.walk():
 
-            if part.get_content_type()=="application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            filename = part.get_filename()
 
-                filename=part.get_filename()
+            if not filename:
+                continue
 
-                with open(filename,"wb") as f:
+            if not filename.lower().endswith(".docx"):
+                continue
 
-                    f.write(part.get_payload(decode=True))
+            data = part.get_payload(decode=True)
 
-                doc=Document(filename)
+            with open(filename, "wb") as f:
+                f.write(data)
 
-                text="\n".join([p.text for p in doc.paragraphs])
+            doc = Document(filename)
 
-                text=coord_links(text)
+            text = "\n".join([p.text for p in doc.paragraphs])
 
-                pdf=filename.replace(".docx",".pdf")
+            text = make_clickable(text)
 
-                os.system(f'libreoffice --headless --convert-to pdf "{filename}"')
+            pdf = filename.replace(".docx", ".pdf")
 
-                if os.path.exists(pdf):
+            os.system(f'libreoffice --headless --convert-to pdf "{filename}"')
 
-                    img=filename.replace(".docx",".png")
+            if os.path.exists(pdf):
 
-                    images=convert_from_path(pdf)
+                images = convert_from_path(pdf)
 
-                    images[0].save(img)
+                img = filename.replace(".docx", ".png")
 
-                    return subject,text,img,mid
+                images[0].save(img)
 
-    return None,None,None,None
+                return subject, text, img, mid
 
-# ---------------- COMMAND ----------------
+    return None, None, None, None
 
-def checkgovil(update,context):
 
-    subject,text,img,mid=check_gmail()
+# ---------------- COMMANDS ----------------
+
+def checkgovil(update, context):
+
+    subject, text, img, mid = check_gmail()
 
     if not subject:
 
@@ -151,65 +171,88 @@ def checkgovil(update,context):
         return
 
     context.bot.send_message(
-    CHAT_ID,
-    f"{subject}\n\n{text}",
-    parse_mode="HTML",
-    disable_web_page_preview=True)
+        CHAT_ID,
+        f"{subject}\n\n{text}",
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
 
-    context.bot.send_photo(CHAT_ID,photo=open(img,"rb"))
+    context.bot.send_photo(
+        CHAT_ID,
+        photo=open(img, "rb")
+    )
 
     cache["gmail"].append(mid)
 
-    save_cache(cache)
+    save_cache()
+
+
+def clearcache(update, context):
+
+    cache["gmail"] = []
+
+    save_cache()
+
+    update.message.reply_text("Cache cleared")
+
 
 # ---------------- AUTO CHECK ----------------
 
-def auto(updater):
+def auto_check(updater):
 
     while True:
 
         try:
 
-            subject,text,img,mid=check_gmail()
+            subject, text, img, mid = check_gmail()
 
             if subject:
 
                 updater.bot.send_message(
-                CHAT_ID,
-                f"{subject}\n\n{text}",
-                parse_mode="HTML",
-                disable_web_page_preview=True)
+                    CHAT_ID,
+                    f"{subject}\n\n{text}",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
 
-                updater.bot.send_photo(CHAT_ID,photo=open(img,"rb"))
+                updater.bot.send_photo(
+                    CHAT_ID,
+                    photo=open(img, "rb")
+                )
 
                 cache["gmail"].append(mid)
 
-                save_cache(cache)
+                save_cache()
 
         except Exception as e:
 
-            print(e)
+            print("AUTO ERROR:", e)
 
         time.sleep(CHECK_INTERVAL)
+
 
 # ---------------- MAIN ----------------
 
 def main():
 
-    updater=Updater(TOKEN)
+    updater = Updater(TOKEN)
 
-    dp=updater.dispatcher
+    dp = updater.dispatcher
 
-    dp.add_handler(CommandHandler("checkgovil",checkgovil))
+    dp.add_handler(CommandHandler("checkgovil", checkgovil))
+    dp.add_handler(CommandHandler("clearcache", clearcache))
 
     updater.start_polling()
 
-    import threading
-
-    threading.Thread(target=auto,args=(updater,),daemon=True).start()
+    threading.Thread(
+        target=auto_check,
+        args=(updater,),
+        daemon=True
+    ).start()
 
     updater.idle()
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
 
     main()
