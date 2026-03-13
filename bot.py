@@ -9,7 +9,6 @@ from datetime import datetime, date
 from email.header import decode_header
 
 import requests
-from bs4 import BeautifulSoup
 from telegram.ext import Updater, CommandHandler
 from docx import Document
 
@@ -29,7 +28,7 @@ SENDER_KEYWORD = "mot.gov.il"
 SUBJECT_KEYWORD = "notice to mariner"
 
 # ---------------- METAREA ----------------
-METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset/3/html"
+METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset_download/3/json"
 
 
 def load_cache():
@@ -336,60 +335,97 @@ def build_message(payload):
     )
 
 
-# ---------------- METAREA ----------------
+# ---------------- METAREA JSON ----------------
+def fetch_metarea_json():
+    r = requests.get(METAREA_URL, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def get_east_forecast_bulletin(data):
+    bulletins = data.get("bulletin", [])
+    for b in bulletins:
+        if b.get("label") == "EAST / HIGH SEAS FORECAST":
+            return b
+    return None
+
+
+def ordered_content_lines(content_dict):
+    pairs = []
+    for k, v in content_dict.items():
+        try:
+            pairs.append((int(k), str(v).strip()))
+        except Exception:
+            continue
+
+    pairs.sort(key=lambda x: x[0])
+    return [v for _, v in pairs if v]
+
+
+def extract_zone_blocks_from_lines(lines):
+    zones = ["TAURUS", "DELTA", "CRUSADE", "KASTELLORIZO SEA"]
+
+    start_idx = {}
+    for i, line in enumerate(lines):
+        line_up = line.strip().upper()
+        if line_up in zones and line_up not in start_idx:
+            start_idx[line_up] = i
+
+    if not all(z in start_idx for z in zones):
+        return None
+
+    taurus_lines = lines[start_idx["TAURUS"] + 1:start_idx["DELTA"]]
+    delta_lines = lines[start_idx["DELTA"] + 1:start_idx["CRUSADE"]]
+    crusade_lines = lines[start_idx["CRUSADE"] + 1:start_idx["KASTELLORIZO SEA"]]
+
+    return {
+        "TAURUS": taurus_lines,
+        "DELTA": delta_lines,
+        "CRUSADE": crusade_lines,
+    }
+
+
+def format_zone_lines(zone_name, lines):
+    text = " ".join([x.strip() for x in lines if x.strip()])
+    text = re.sub(r"\.\s*", ".\n", text)
+    text = re.sub(r"\n{2,}", "\n", text).strip()
+    return f"📍 {zone_name}\n{text}"
+
+
 def get_metarea():
     try:
-        r = requests.get(METAREA_URL, timeout=20)
-        r.raise_for_status()
+        data = fetch_metarea_json()
+        bulletin = get_east_forecast_bulletin(data)
 
-        soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text("\n")
+        if not bulletin:
+            return "METAREA EAST forecast not found."
 
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        clean = "\n".join(lines)
+        lines = ordered_content_lines(bulletin.get("content", {}))
+        if not lines:
+            return "METAREA EAST forecast content is empty."
 
-        issued_match = re.search(
-            r"\d{1,2}\s+[A-Z]+\s+\d{4}\s*/\s*\d{4}\s*UTC",
-            clean,
-            re.I
-        )
-        issued = issued_match.group(0) if issued_match else "N/A"
+        issued = "N/A"
+        for line in lines:
+            if re.search(r"\bUTC\b", line, re.I):
+                issued = line.strip()
+                break
 
-        taurus_pos = clean.rfind("TAURUS")
-        delta_pos = clean.rfind("DELTA")
-        crusade_pos = clean.rfind("CRUSADE")
-        kast_pos = clean.rfind("KASTELLORIZO SEA")
-
-        if min(taurus_pos, delta_pos, crusade_pos) == -1:
-            return f"🕒 Issued: {issued}\n\nMETAREA text not found."
-
-        if kast_pos == -1:
-            kast_pos = len(clean)
-
-        if not (taurus_pos < delta_pos < crusade_pos < kast_pos):
-            return f"🕒 Issued: {issued}\n\nMETAREA text structure changed."
-
-        taurus = clean[taurus_pos:delta_pos]
-        delta = clean[delta_pos:crusade_pos]
-        crusade = clean[crusade_pos:kast_pos]
-
-        def format_zone(name, block):
-            block = block.replace(name, "", 1).strip()
-            block = re.sub(r"\.\s*", ".\n", block)
-            return f"📍 {name}\n{block}"
+        zone_blocks = extract_zone_blocks_from_lines(lines)
+        if not zone_blocks:
+            return f"🕒 Issued: {issued}\n\nMETAREA zone markers not found."
 
         msg = (
             f"🕒 Issued: {issued}\n\n"
-            f"{format_zone('TAURUS', taurus)}\n\n"
-            f"{format_zone('DELTA', delta)}\n\n"
-            f"{format_zone('CRUSADE', crusade)}"
+            f"{format_zone_lines('TAURUS', zone_blocks['TAURUS'])}\n\n"
+            f"{format_zone_lines('DELTA', zone_blocks['DELTA'])}\n\n"
+            f"{format_zone_lines('CRUSADE', zone_blocks['CRUSADE'])}"
         )
 
         return msg[:4000]
 
     except Exception as e:
-        print("METAREA error:", e)
-        return f"METAREA error: {e}"
+        print("METAREA JSON error:", e)
+        return f"METAREA JSON error: {e}"
 
 
 # ---------------- GMAIL ----------------
