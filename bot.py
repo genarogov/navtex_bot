@@ -258,6 +258,134 @@ def add_coordinate_links(text):
     return safe
 
 
+def extract_coordinates(text):
+    text = text or ""
+    coords = []
+
+    pattern_latn_longe = re.compile(
+        r'(?:(?:^)|(?:\b\d+\.\s*))'
+        r'(?P<lat_deg>\d{1,2})\s+'
+        r'(?P<lat_min>\d{2})\s+'
+        r'(?P<lat_sec>\d{2}(?:\.\d+)?)\s+'
+        r'(?P<lon_deg>\d{3})\s+'
+        r'(?P<lon_min>\d{2})\s+'
+        r'(?P<lon_sec>\d{2}(?:\.\d+)?)'
+        r'(?:\s*\([^)]*\))?',
+        re.I | re.M
+    )
+    for m in pattern_latn_longe.finditer(text):
+        try:
+            lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), "N")
+            lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), "E")
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    pattern_dms = re.compile(
+        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
+        r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
+        r'(?P<lat_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:-]*'
+        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*'
+        r'(?P<lon_min>\d{1,2})\s*[\'′]?\s*'
+        r'(?P<lon_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.I
+    )
+    for m in pattern_dms.finditer(text):
+        try:
+            lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), m.group("lat_dir"))
+            lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    pattern_dm = re.compile(
+        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
+        r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:-]*'
+        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*[-–—:/,\s]?\s*'
+        r'(?P<lon_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.I
+    )
+    for m in pattern_dm.finditer(text):
+        try:
+            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
+            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    pattern_compact_dm = re.compile(
+        r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:-]*'
+        r'(?P<lon_deg>\d{3})(?P<lon_min>\d{2}(?:\.\d+)?)\s*'
+        r'(?P<lon_dir>[EW])',
+        re.I
+    )
+    for m in pattern_compact_dm.finditer(text):
+        try:
+            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
+            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    pattern_decimal = re.compile(
+        r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:-]*'
+        r'(?P<lon>\d{1,3}(?:\.\d+)?)\s*[°º]?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.I
+    )
+    for m in pattern_decimal.finditer(text):
+        try:
+            lat = decimal_signed(m.group("lat"), m.group("lat_dir"))
+            lon = decimal_signed(m.group("lon"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    unique = []
+    seen = set()
+    for lat, lon in coords:
+        key = (round(lat, 6), round(lon, 6))
+        if key not in seen:
+            seen.add(key)
+            unique.append((lat, lon))
+
+    return unique
+
+
+def build_gpx(coords, route_name="Notice Route"):
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<gpx version="1.1" creator="Telegram Notice Bot" xmlns="http://www.topografix.com/GPX/1/1">'
+    ]
+
+    for idx, (lat, lon) in enumerate(coords, start=1):
+        lines.append(f'  <wpt lat="{lat:.6f}" lon="{lon:.6f}">')
+        lines.append(f'    <name>WP{idx}</name>')
+        lines.append('  </wpt>')
+
+    if len(coords) > 1:
+        lines.append('  <rte>')
+        lines.append(f'    <name>{html_escape(route_name)}</name>')
+        for idx, (lat, lon) in enumerate(coords, start=1):
+            lines.append(f'    <rtept lat="{lat:.6f}" lon="{lon:.6f}">')
+            lines.append(f'      <name>WP{idx}</name>')
+            lines.append('    </rtept>')
+        lines.append('  </rte>')
+
+    lines.append('</gpx>')
+    return "\n".join(lines)
+
+
 # ---------------- VALID STATUS ----------------
 def get_status_icon(valid):
     if not valid or valid == "N/A":
@@ -605,6 +733,7 @@ def process_entry(bot, chat_id, entry):
     msg = entry["msg"]
 
     text_sent = False
+    pdf_sent = False
 
     file_bytes = extract_docx(msg)
     if file_bytes:
@@ -621,6 +750,21 @@ def process_entry(bot, chat_id, entry):
             )
         text_sent = True
 
+        coords = extract_coordinates(payload["body"])
+        if len(coords) > 1:
+            gpx_text = build_gpx(coords, route_name=f"Notice {payload['notice']}")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".gpx", mode="w", encoding="utf-8") as tmp_gpx:
+                tmp_gpx.write(gpx_text)
+                gpx_path = tmp_gpx.name
+
+            with open(gpx_path, "rb") as f:
+                bot.send_document(chat_id=chat_id, document=f)
+
+            try:
+                os.remove(gpx_path)
+            except Exception:
+                pass
+
     pdf_bytes, pdf_name = extract_pdf(msg)
     if pdf_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
@@ -635,7 +779,9 @@ def process_entry(bot, chat_id, entry):
         except Exception:
             pass
 
-    if not text_sent and not pdf_bytes:
+        pdf_sent = True
+
+    if not text_sent and not pdf_sent:
         bot.send_message(chat_id=chat_id, text="DOCX attachment not found.")
         return False
 
