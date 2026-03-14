@@ -6,14 +6,12 @@ import imaplib
 import email
 import tempfile
 import threading
-import hashlib
 from io import BytesIO
 from datetime import datetime, date
 from email.header import decode_header
 
 import requests
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
+from telegram.ext import Updater, CommandHandler
 from docx import Document
 
 # ---------------- ENV ----------------
@@ -37,7 +35,6 @@ METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset_download/3/
 # ---------------- LOCK / DUPLICATE GUARD ----------------
 MAIL_LOCK = threading.Lock()
 RECENT_SENT_IDS = set()
-NOTICE_COORDS = {}
 
 
 def load_cache():
@@ -115,11 +112,6 @@ def split_html_message(text, limit=4000):
     return parts or [""]
 
 
-def build_notice_token(message_id, notice_no):
-    seed = f"{message_id}|{notice_no}|{int(time.time())}"
-    return hashlib.md5(seed.encode("utf-8")).hexdigest()[:16]
-
-
 # ---------------- COORDINATES ----------------
 def dms_to_decimal(deg, minutes, seconds, direction):
     value = float(deg) + float(minutes) / 60 + float(seconds) / 3600
@@ -140,22 +132,6 @@ def decimal_signed(value, direction):
     if direction.upper() in ["S", "W"]:
         return -abs(value)
     return abs(value)
-
-
-def decimal_to_navionics_line(lat, lon):
-    lat_abs = abs(lat)
-    lon_abs = abs(lon)
-
-    lat_deg = int(lat_abs)
-    lon_deg = int(lon_abs)
-
-    lat_min = (lat_abs - lat_deg) * 60
-    lon_min = (lon_abs - lon_deg) * 60
-
-    lat_h = "N" if lat >= 0 else "S"
-    lon_h = "E" if lon >= 0 else "W"
-
-    return f"{lat_deg:02d}° {lat_min:06.3f}' {lat_h} {lon_deg:03d}° {lon_min:06.3f}' {lon_h}"
 
 
 def replace_coordinates(text, pattern, parser):
@@ -195,13 +171,23 @@ def add_coordinate_links(text):
     )
 
     def parse_latn_longe(m):
-        lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), "N")
-        lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), "E")
+        lat = dms_to_decimal(
+            m.group("lat_deg"),
+            m.group("lat_min"),
+            m.group("lat_sec"),
+            "N"
+        )
+        lon = dms_to_decimal(
+            m.group("lon_deg"),
+            m.group("lon_min"),
+            m.group("lon_sec"),
+            "E"
+        )
         return lat, lon
 
     safe = replace_coordinates(safe, pattern_latn_longe, parse_latn_longe)
 
-    # 1) DMS: 32 58 10 N 034 00 00 E
+    # 1) DMS
     pattern_dms = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
         r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
@@ -271,110 +257,6 @@ def add_coordinate_links(text):
     safe = replace_coordinates(safe, pattern_decimal, parse_decimal)
 
     return safe
-
-
-def extract_coordinates(text):
-    text = text or ""
-    coords = []
-
-    pattern_latn_longe = re.compile(
-        r'(?:(?:^)|(?:\b\d+\.\s*))'
-        r'(?P<lat_deg>\d{1,2})\s+'
-        r'(?P<lat_min>\d{2})\s+'
-        r'(?P<lat_sec>\d{2}(?:\.\d+)?)\s+'
-        r'(?P<lon_deg>\d{3})\s+'
-        r'(?P<lon_min>\d{2})\s+'
-        r'(?P<lon_sec>\d{2}(?:\.\d+)?)'
-        r'(?:\s*\([^)]*\))?',
-        re.I | re.M
-    )
-    for m in pattern_latn_longe.finditer(text):
-        try:
-            lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), "N")
-            lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), "E")
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    pattern_dms = re.compile(
-        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
-        r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
-        r'(?P<lat_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
-        r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
-        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*'
-        r'(?P<lon_min>\d{1,2})\s*[\'′]?\s*'
-        r'(?P<lon_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
-        r'(?P<lon_dir>[EW])',
-        re.I
-    )
-    for m in pattern_dms.finditer(text):
-        try:
-            lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), m.group("lat_dir"))
-            lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), m.group("lon_dir"))
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    pattern_dm = re.compile(
-        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
-        r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
-        r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
-        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*[-–—:/,\s]?\s*'
-        r'(?P<lon_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
-        r'(?P<lon_dir>[EW])',
-        re.I
-    )
-    for m in pattern_dm.finditer(text):
-        try:
-            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
-            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    pattern_compact_dm = re.compile(
-        r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
-        r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
-        r'(?P<lon_deg>\d{3})(?P<lon_min>\d{2}(?:\.\d+)?)\s*'
-        r'(?P<lon_dir>[EW])',
-        re.I
-    )
-    for m in pattern_compact_dm.finditer(text):
-        try:
-            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
-            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    pattern_decimal = re.compile(
-        r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
-        r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
-        r'(?P<lon>\d{1,3}(?:\.\d+)?)\s*[°º]?\s*'
-        r'(?P<lon_dir>[EW])',
-        re.I
-    )
-    for m in pattern_decimal.finditer(text):
-        try:
-            lat = decimal_signed(m.group("lat"), m.group("lat_dir"))
-            lon = decimal_signed(m.group("lon"), m.group("lon_dir"))
-            coords.append((lat, lon))
-        except Exception:
-            pass
-
-    unique = []
-    seen = set()
-    for lat, lon in coords:
-        key = (round(lat, 6), round(lon, 6))
-        if key not in seen:
-            seen.add(key)
-            unique.append((lat, lon))
-
-    return unique
 
 
 # ---------------- VALID STATUS ----------------
@@ -487,22 +369,6 @@ def build_message(payload):
         f"<b>Valid:</b> {html_escape(payload['valid'])}\n\n"
         f"{body}"
     )
-
-
-def build_navionics_markup(token, coords):
-    buttons = []
-    row = []
-
-    for idx, _ in enumerate(coords, start=1):
-        row.append(InlineKeyboardButton(f"Navionics {idx}", callback_data=f"nav|{token}|{idx-1}"))
-        if len(row) == 3:
-            buttons.append(row)
-            row = []
-
-    if row:
-        buttons.append(row)
-
-    return InlineKeyboardMarkup(buttons)
 
 
 # ---------------- METAREA JSON ----------------
@@ -752,23 +618,14 @@ def process_entry(bot, chat_id, entry):
     if file_bytes:
         text = read_docx(file_bytes)
         payload = extract_notice(text)
-        coords = extract_coordinates(payload["body"])
         message = build_message(payload)
 
-        reply_markup = None
-        if coords:
-            token = build_notice_token(entry["id"], payload["notice"])
-            NOTICE_COORDS[token] = coords
-            reply_markup = build_navionics_markup(token, coords)
-
-        chunks = split_html_message(message)
-        for i, chunk in enumerate(chunks):
+        for chunk in split_html_message(message):
             bot.send_message(
                 chat_id=chat_id,
                 text=chunk,
                 parse_mode="HTML",
-                disable_web_page_preview=True,
-                reply_markup=reply_markup if i == 0 else None
+                disable_web_page_preview=True
             )
         text_sent = True
 
@@ -789,9 +646,10 @@ def initialize_gmail_cache_silently():
     if cache.get("gmail_initialized"):
         return
 
-    latest = fetch_latest_matching_email()
-    if latest and latest["id"] not in cache["gmail"]:
-        cache["gmail"].append(latest["id"])
+    messages = fetch_recent_matching_emails()
+    for m in messages:
+        if m["id"] not in cache["gmail"]:
+            cache["gmail"].append(m["id"])
 
     cache["gmail_initialized"] = True
     save_cache(cache)
@@ -852,35 +710,6 @@ def checkgovil(update, context):
             return
 
 
-def navionics_callback(update, context):
-    query = update.callback_query
-    query.answer()
-
-    data = query.data or ""
-    parts = data.split("|")
-
-    if len(parts) != 3 or parts[0] != "nav":
-        return
-
-    token = parts[1]
-    try:
-        idx = int(parts[2])
-    except Exception:
-        return
-
-    coords = NOTICE_COORDS.get(token)
-    if not coords:
-        query.message.reply_text("No coordinates found.")
-        return
-
-    if idx < 0 or idx >= len(coords):
-        query.message.reply_text("No coordinates found.")
-        return
-
-    lat, lon = coords[idx]
-    query.message.reply_text(decimal_to_navionics_line(lat, lon))
-
-
 def testbot(update, context):
     update.message.reply_text("Bot running")
 
@@ -890,7 +719,6 @@ def clearcache(update, context):
         cache["gmail"] = []
         cache["gmail_initialized"] = False
         RECENT_SENT_IDS.clear()
-        NOTICE_COORDS.clear()
         save_cache(cache)
     update.message.reply_text("Cache cleared")
 
@@ -910,7 +738,6 @@ def main():
     dp.add_handler(CommandHandler("testbot", testbot))
     dp.add_handler(CommandHandler("clearcache", clearcache))
     dp.add_handler(CommandHandler("metarea", metarea))
-    dp.add_handler(CallbackQueryHandler(navionics_callback, pattern=r"^nav\|"))
 
     updater.start_polling()
     print("BOT STARTED")
