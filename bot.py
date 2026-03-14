@@ -580,15 +580,19 @@ def extract_pdf(msg):
         filename = part.get_filename()
         filename = decode_mime_words(filename) if filename else ""
         content_type = (part.get_content_type() or "").lower()
+        disposition = str(part.get("Content-Disposition", "")).lower()
 
-        if (
+        is_pdf = (
             filename.lower().endswith(".pdf")
             or content_type == "application/pdf"
-            or (content_type == "application/octet-stream" and filename.lower().endswith(".pdf"))
-        ):
+            or content_type == "application/x-pdf"
+            or ("attachment" in disposition and ".pdf" in filename.lower())
+        )
+
+        if is_pdf:
             file_bytes = part.get_payload(decode=True)
             if file_bytes:
-                return file_bytes, filename or "attachment.pdf"
+                return file_bytes, (filename or "attachment.pdf")
 
     return None, None
 
@@ -603,7 +607,12 @@ def process_entry(bot, chat_id, entry):
             pdf_path = tmp_pdf.name
 
         with open(pdf_path, "rb") as f:
-            bot.send_document(chat_id=chat_id, document=f, filename=pdf_name)
+            bot.send_document(chat_id=chat_id, document=f)
+
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
 
     file_bytes = extract_docx(msg)
 
