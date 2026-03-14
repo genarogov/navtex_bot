@@ -151,6 +151,37 @@ def replace_coordinates(text, pattern, parser):
 def add_coordinate_links(text):
     safe = html_escape(text or "")
 
+    # 0) LAT N LONG E without letters in each line
+    # 1. 33 00 50 035 05 23 (shore)
+    pattern_latn_longe = re.compile(
+        r'(?:(?:^)|(?:\b\d+\.\s*))'
+        r'(?P<lat_deg>\d{1,2})\s+'
+        r'(?P<lat_min>\d{2})\s+'
+        r'(?P<lat_sec>\d{2}(?:\.\d+)?)\s+'
+        r'(?P<lon_deg>\d{3})\s+'
+        r'(?P<lon_min>\d{2})\s+'
+        r'(?P<lon_sec>\d{2}(?:\.\d+)?)'
+        r'(?:\s*\([^)]*\))?',
+        re.I | re.M
+    )
+
+    def parse_latn_longe(m):
+        lat = dms_to_decimal(
+            m.group("lat_deg"),
+            m.group("lat_min"),
+            m.group("lat_sec"),
+            "N"
+        )
+        lon = dms_to_decimal(
+            m.group("lon_deg"),
+            m.group("lon_min"),
+            m.group("lon_sec"),
+            "E"
+        )
+        return lat, lon
+
+    safe = replace_coordinates(safe, pattern_latn_longe, parse_latn_longe)
+
     # 1) DMS: 32 58 10 N 034 00 00 E
     pattern_dms = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
@@ -544,8 +575,36 @@ def extract_docx(msg):
     return None
 
 
+def extract_pdf(msg):
+    for part in msg.walk():
+        filename = part.get_filename()
+        filename = decode_mime_words(filename) if filename else ""
+        content_type = (part.get_content_type() or "").lower()
+
+        if (
+            filename.lower().endswith(".pdf")
+            or content_type == "application/pdf"
+            or (content_type == "application/octet-stream" and filename.lower().endswith(".pdf"))
+        ):
+            file_bytes = part.get_payload(decode=True)
+            if file_bytes:
+                return file_bytes, filename or "attachment.pdf"
+
+    return None, None
+
+
 def process_entry(bot, chat_id, entry):
     msg = entry["msg"]
+
+    pdf_bytes, pdf_name = extract_pdf(msg)
+    if pdf_bytes:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+            tmp_pdf.write(pdf_bytes)
+            pdf_path = tmp_pdf.name
+
+        with open(pdf_path, "rb") as f:
+            bot.send_document(chat_id=chat_id, document=f, filename=pdf_name)
+
     file_bytes = extract_docx(msg)
 
     if not file_bytes:
