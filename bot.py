@@ -41,7 +41,9 @@ NAVAREA_BOX_LAT_MAX = 38.5
 NAVAREA_BOX_LON_MIN = 26.0
 NAVAREA_BOX_LON_MAX = 36.5
 
-# ---------------- WEATHER BUTTONS ----------------
+# ---------------- WEATHER / FORECAST BUTTONS ----------------
+FORECAST_BUTTON = "Forecast Taurus, Delta, Crusade"
+
 WEATHER_BUTTONS = [
     "Acco weather",
     "Haifa weather",
@@ -52,6 +54,7 @@ WEATHER_BUTTONS = [
 ]
 
 WEATHER_KEYBOARD = [
+    [FORECAST_BUTTON],
     ["Acco weather", "Haifa weather"],
     ["Herzliya weather", "Tel aviv weather"],
     ["Ashdod weather", "Ashkelon weather"],
@@ -952,6 +955,18 @@ def build_weather_placeholder(station_name):
 
 def handle_weather_button(update, context):
     text = (update.message.text or "").strip()
+
+    if text == FORECAST_BUTTON:
+        msg = get_metarea()
+        for i, chunk in enumerate(split_html_message(msg, limit=4000)):
+            if i == 0:
+                update.message.reply_text(
+                    chunk,
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                update.message.reply_text(chunk)
+        return
 
     if text not in WEATHER_BUTTONS:
         return
