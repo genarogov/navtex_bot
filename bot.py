@@ -6,6 +6,7 @@ import imaplib
 import email
 import tempfile
 import threading
+import html
 from io import BytesIO
 from datetime import datetime, date
 from email.header import decode_header
@@ -32,14 +33,27 @@ SUBJECT_KEYWORD = "notice to mariner"
 # ---------------- METAREA ----------------
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset_download/3/json"
 
+# ---------------- SEALAGOM / NAVAREA III ----------------
+SEALAGOM_URL = "https://www.sealagom.com/navarea/3/"
+NAVAREA_BOX_LAT_MIN = 30.0
+NAVAREA_BOX_LAT_MAX = 38.5
+NAVAREA_BOX_LON_MIN = 26.0
+NAVAREA_BOX_LON_MAX = 36.5
+
 # ---------------- LOCK / DUPLICATE GUARD ----------------
 MAIL_LOCK = threading.Lock()
 RECENT_SENT_IDS = set()
+RECENT_NAVAREA_SENT_IDS = set()
 
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
-        return {"gmail": [], "gmail_initialized": False}
+        return {
+            "gmail": [],
+            "gmail_initialized": False,
+            "sealagom": [],
+            "sealagom_initialized": False,
+        }
 
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -51,9 +65,20 @@ def load_cache():
         if "gmail_initialized" not in data:
             data["gmail_initialized"] = False
 
+        if "sealagom" not in data or not isinstance(data["sealagom"], list):
+            data["sealagom"] = []
+
+        if "sealagom_initialized" not in data:
+            data["sealagom_initialized"] = False
+
         return data
     except Exception:
-        return {"gmail": [], "gmail_initialized": False}
+        return {
+            "gmail": [],
+            "gmail_initialized": False,
+            "sealagom": [],
+            "sealagom_initialized": False,
+        }
 
 
 def save_cache(data):
@@ -112,6 +137,27 @@ def split_html_message(text, limit=4000):
     return parts or [""]
 
 
+def split_plain_message(text, limit=4000):
+    parts = []
+    text = text or ""
+
+    while text:
+        if len(text) <= limit:
+            parts.append(text)
+            break
+
+        cut = text.rfind("\n", 0, limit)
+        if cut == -1:
+            cut = text.rfind(" ", 0, limit)
+        if cut == -1:
+            cut = limit
+
+        parts.append(text[:cut])
+        text = text[cut:].lstrip()
+
+    return parts or [""]
+
+
 # ---------------- COORDINATES ----------------
 def dms_to_decimal(deg, minutes, seconds, direction):
     value = float(deg) + float(minutes) / 60 + float(seconds) / 3600
@@ -143,13 +189,13 @@ def replace_coordinates(text, pattern, parser):
             lat, lon = parser(m)
             url = f"https://maps.google.com/?q={lat},{lon}"
             original = m.group(0)
-            html = f'<a href="{url}">{original}</a>'
-            replacements.append((m.start(), m.end(), html))
+            html_link = f'<a href="{url}">{original}</a>'
+            replacements.append((m.start(), m.end(), html_link))
         except Exception:
             pass
 
-    for start, end, html in reversed(replacements):
-        text = text[:start] + html + text[end:]
+    for start, end, html_link in reversed(replacements):
+        text = text[:start] + html_link + text[end:]
 
     return text
 
@@ -193,7 +239,7 @@ def add_coordinate_links(text):
         r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
         r'(?P<lat_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
         r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
+        r'[\s,;/:\-–—]*'
         r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*'
         r'(?P<lon_min>\d{1,2})\s*[\'′]?\s*'
         r'(?P<lon_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
@@ -213,7 +259,7 @@ def add_coordinate_links(text):
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
         r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
+        r'[\s,;/:\-–—]*'
         r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lon_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
         r'(?P<lon_dir>[EW])',
@@ -231,7 +277,7 @@ def add_coordinate_links(text):
     pattern_compact_dm = re.compile(
         r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
+        r'[\s,;/:\-–—]*'
         r'(?P<lon_deg>\d{3})(?P<lon_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lon_dir>[EW])',
         re.I
@@ -243,7 +289,7 @@ def add_coordinate_links(text):
     pattern_decimal = re.compile(
         r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lat_dir>[NS])'
-        r'[\s,;/:-]*'
+        r'[\s,;/:\-–—]*'
         r'(?P<lon>\d{1,3}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lon_dir>[EW])',
         re.I
@@ -257,6 +303,129 @@ def add_coordinate_links(text):
     safe = replace_coordinates(safe, pattern_decimal, parse_decimal)
 
     return safe
+
+
+def extract_coordinates_for_filter(text):
+    text = text or ""
+    coords = []
+
+    # 0) 35 12 30 033 45 20
+    pattern_latn_longe = re.compile(
+        r'(?:(?:^)|(?:\b\d+\.\s*))'
+        r'(?P<lat_deg>\d{1,2})\s+'
+        r'(?P<lat_min>\d{2})\s+'
+        r'(?P<lat_sec>\d{2}(?:\.\d+)?)\s+'
+        r'(?P<lon_deg>\d{3})\s+'
+        r'(?P<lon_min>\d{2})\s+'
+        r'(?P<lon_sec>\d{2}(?:\.\d+)?)'
+        r'(?:\s*\([^)]*\))?',
+        re.I | re.M
+    )
+
+    for m in pattern_latn_longe.finditer(text):
+        try:
+            lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), "N")
+            lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), "E")
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    # 1) DMS 42 52.24 N - 031 09.52 E
+    pattern_dms = re.compile(
+        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
+        r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
+        r'(?P<lat_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:\-–—]*'
+        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*'
+        r'(?P<lon_min>\d{1,2})\s*[\'′]?\s*'
+        r'(?P<lon_sec>\d{1,2}(?:\.\d+)?)\s*(?:["″])?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.I
+    )
+
+    for m in pattern_dms.finditer(text):
+        try:
+            lat = dms_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_sec"), m.group("lat_dir"))
+            lon = dms_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_sec"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    # 2) DM 40-08.33 N - 006-18.65 E / 33 45.5N 035 12.3E
+    pattern_dm = re.compile(
+        r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
+        r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:\-–—]*'
+        r'(?P<lon_deg>\d{1,3})\s*[°º]?\s*[-–—:/,\s]?\s*'
+        r'(?P<lon_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.I
+    )
+
+    for m in pattern_dm.finditer(text):
+        try:
+            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
+            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    # 3) Compact DM 3345.5N 03512.3E
+    pattern_compact_dm = re.compile(
+        r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:\-–—]*'
+        r'(?P<lon_deg>\d{3})(?P<lon_min>\d{2}(?:\.\d+)?)\s*'
+        r'(?P<lon_dir>[EW])',
+        re.I
+    )
+
+    for m in pattern_compact_dm.finditer(text):
+        try:
+            lat = dm_to_decimal(m.group("lat_deg"), m.group("lat_min"), m.group("lat_dir"))
+            lon = dm_to_decimal(m.group("lon_deg"), m.group("lon_min"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    # 4) Decimal 33.5 N 35.2 E
+    pattern_decimal = re.compile(
+        r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
+        r'(?P<lat_dir>[NS])'
+        r'[\s,;/:\-–—]*'
+        r'(?P<lon>\d{1,3}(?:\.\d+)?)\s*[°º]?\s*'
+        r'(?P<lon_dir>[EW])',
+        re.I
+    )
+
+    for m in pattern_decimal.finditer(text):
+        try:
+            lat = decimal_signed(m.group("lat"), m.group("lat_dir"))
+            lon = decimal_signed(m.group("lon"), m.group("lon_dir"))
+            coords.append((lat, lon))
+        except Exception:
+            pass
+
+    # убираем дубли
+    uniq = []
+    seen = set()
+    for lat, lon in coords:
+        key = (round(lat, 6), round(lon, 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append((lat, lon))
+
+    return uniq
+
+
+def in_navarea_box(lat, lon):
+    return (
+        NAVAREA_BOX_LAT_MIN <= lat <= NAVAREA_BOX_LAT_MAX
+        and NAVAREA_BOX_LON_MIN <= lon <= NAVAREA_BOX_LON_MAX
+    )
 
 
 # ---------------- VALID STATUS ----------------
@@ -641,6 +810,128 @@ def process_entry(bot, chat_id, entry):
     return True
 
 
+# ---------------- SEALAGOM / NAVAREA III ----------------
+def fetch_sealagom_page_text():
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    r = requests.get(SEALAGOM_URL, headers=headers, timeout=25)
+    r.raise_for_status()
+
+    raw = r.text
+
+    raw = re.sub(r"(?is)<script.*?>.*?</script>", " ", raw)
+    raw = re.sub(r"(?is)<style.*?>.*?</style>", " ", raw)
+    raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
+    raw = re.sub(r"(?i)</p>", "\n", raw)
+    raw = re.sub(r"(?i)</div>", "\n", raw)
+    raw = re.sub(r"(?s)<[^>]+>", " ", raw)
+
+    text = html.unescape(raw)
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n+", "\n", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+
+    return text
+
+
+def extract_navarea_messages(page_text):
+    page_text = page_text or ""
+
+    # обрезаем все до первого NAVAREA III - xxxx/yy
+    m = re.search(r'NAVAREA\s+III\s*-\s*\d{4}/\d{2}', page_text, re.I)
+    if not m:
+        return []
+
+    text = page_text[m.start():]
+
+    # режем на отдельные сообщения
+    parts = re.split(r'(?=NAVAREA\s+III\s*-\s*\d{4}/\d{2})', text, flags=re.I)
+    messages = []
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        id_match = re.match(r'NAVAREA\s+III\s*-\s*(\d{4}/\d{2})', part, re.I)
+        if not id_match:
+            continue
+
+        nav_id = id_match.group(1).strip()
+
+        # стоп по мусору интерфейса, если попадется
+        part = re.split(
+            r'(?:Sign In|Register|Search Messages|View Messages|Download \(|Subscribe\b)',
+            part,
+            maxsplit=1,
+            flags=re.I
+        )[0].strip()
+
+        messages.append({
+            "id": nav_id,
+            "title": f"NAVAREA III - {nav_id}",
+            "text": part,
+        })
+
+    return messages
+
+
+def navarea_message_matches_box(message_text):
+    coords = extract_coordinates_for_filter(message_text)
+    if not coords:
+        return False, []
+
+    hits = []
+    for lat, lon in coords:
+        if in_navarea_box(lat, lon):
+            hits.append((lat, lon))
+
+    return len(hits) > 0, hits
+
+
+def fetch_recent_matching_navarea():
+    page_text = fetch_sealagom_page_text()
+    messages = extract_navarea_messages(page_text)
+
+    matched = []
+    for msg in messages:
+        ok, hits = navarea_message_matches_box(msg["text"])
+        if ok:
+            msg["hits"] = hits
+            matched.append(msg)
+
+    return matched
+
+
+def fetch_latest_matching_navarea():
+    messages = fetch_recent_matching_navarea()
+    return messages[0] if messages else None
+
+
+def build_navarea_message(entry):
+    linked_text = add_coordinate_links(entry["text"])
+    return f"⚠️ <b>{html_escape(entry['title'])}</b>\n\n{linked_text}"
+
+
+def process_navarea_entry(bot, chat_id, entry):
+    message = build_navarea_message(entry)
+
+    for chunk in split_html_message(message):
+        bot.send_message(
+            chat_id=chat_id,
+            text=chunk,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+
+    return True
+
+
 # ---------------- AUTO CHECK ----------------
 def initialize_gmail_cache_silently():
     if cache.get("gmail_initialized"):
@@ -655,6 +946,22 @@ def initialize_gmail_cache_silently():
     save_cache(cache)
 
 
+def initialize_sealagom_cache_silently():
+    if cache.get("sealagom_initialized"):
+        return
+
+    try:
+        messages = fetch_recent_matching_navarea()
+        for m in messages:
+            if m["id"] not in cache["sealagom"]:
+                cache["sealagom"].append(m["id"])
+
+        cache["sealagom_initialized"] = True
+        save_cache(cache)
+    except Exception as e:
+        print("SeaLagom init error:", e)
+
+
 def auto_check(updater):
     if not CHAT_ID:
         return
@@ -663,6 +970,7 @@ def auto_check(updater):
         return
 
     try:
+        # Gmail
         initialize_gmail_cache_silently()
         messages = fetch_recent_matching_emails()
 
@@ -679,8 +987,25 @@ def auto_check(updater):
             if ok:
                 save_cache(cache)
 
+        # SeaLagom / NAVAREA III
+        initialize_sealagom_cache_silently()
+        nav_messages = fetch_recent_matching_navarea()
+
+        for m in reversed(nav_messages):
+            if m["id"] in cache["sealagom"]:
+                continue
+            if m["id"] in RECENT_NAVAREA_SENT_IDS:
+                continue
+
+            RECENT_NAVAREA_SENT_IDS.add(m["id"])
+            ok = process_navarea_entry(updater.bot, CHAT_ID, m)
+            cache["sealagom"].append(m["id"])
+
+            if ok:
+                save_cache(cache)
+
     except Exception as e:
-        print("Gmail error:", e)
+        print("Auto-check error:", e)
 
     finally:
         MAIL_LOCK.release()
@@ -707,6 +1032,26 @@ def checkgovil(update, context):
             return
 
 
+def checknavarea(update, context):
+    with MAIL_LOCK:
+        latest = fetch_latest_matching_navarea()
+
+        if not latest:
+            update.message.reply_text("No NAVAREA III messages in box")
+            return
+
+        ok = process_navarea_entry(context.bot, update.message.chat.id, latest)
+
+        RECENT_NAVAREA_SENT_IDS.add(latest["id"])
+
+        if latest["id"] not in cache["sealagom"]:
+            cache["sealagom"].append(latest["id"])
+            save_cache(cache)
+
+        if not ok:
+            return
+
+
 def testbot(update, context):
     update.message.reply_text("Bot running")
 
@@ -715,7 +1060,10 @@ def clearcache(update, context):
     with MAIL_LOCK:
         cache["gmail"] = []
         cache["gmail_initialized"] = False
+        cache["sealagom"] = []
+        cache["sealagom_initialized"] = False
         RECENT_SENT_IDS.clear()
+        RECENT_NAVAREA_SENT_IDS.clear()
         save_cache(cache)
     update.message.reply_text("Cache cleared")
 
@@ -732,6 +1080,7 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("checkgovil", checkgovil))
+    dp.add_handler(CommandHandler("checknavarea", checknavarea))
     dp.add_handler(CommandHandler("testbot", testbot))
     dp.add_handler(CommandHandler("clearcache", clearcache))
     dp.add_handler(CommandHandler("metarea", metarea))
