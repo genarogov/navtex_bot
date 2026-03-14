@@ -5,6 +5,7 @@ import json
 import imaplib
 import email
 import tempfile
+import threading
 from datetime import datetime, date
 from email.header import decode_header
 
@@ -29,6 +30,9 @@ SUBJECT_KEYWORD = "notice to mariner"
 
 # ---------------- METAREA ----------------
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset_download/3/json"
+
+# ---------------- LOCK ----------------
+MAIL_LOCK = threading.Lock()
 
 
 def load_cache():
@@ -600,6 +604,23 @@ def extract_pdf(msg):
 def process_entry(bot, chat_id, entry):
     msg = entry["msg"]
 
+    text_sent = False
+
+    file_bytes = extract_docx(msg)
+    if file_bytes:
+        text = read_docx(file_bytes)
+        payload = extract_notice(text)
+        message = build_message(payload)
+
+        for chunk in split_html_message(message):
+            bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        text_sent = True
+
     pdf_bytes, pdf_name = extract_pdf(msg)
     if pdf_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
@@ -614,23 +635,9 @@ def process_entry(bot, chat_id, entry):
         except Exception:
             pass
 
-    file_bytes = extract_docx(msg)
-
-    if not file_bytes:
+    if not text_sent and not pdf_bytes:
         bot.send_message(chat_id=chat_id, text="DOCX attachment not found.")
         return False
-
-    text = read_docx(file_bytes)
-    payload = extract_notice(text)
-    message = build_message(payload)
-
-    for chunk in split_html_message(message):
-        bot.send_message(
-            chat_id=chat_id,
-            text=chunk,
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
 
     return True
 
@@ -649,6 +656,12 @@ def initialize_gmail_cache_silently():
 
 
 def auto_check(updater):
+    if not CHAT_ID:
+        return
+
+    if not MAIL_LOCK.acquire(blocking=False):
+        return
+
     try:
         initialize_gmail_cache_silently()
         messages = fetch_recent_matching_emails()
@@ -666,16 +679,27 @@ def auto_check(updater):
     except Exception as e:
         print("Gmail error:", e)
 
+    finally:
+        MAIL_LOCK.release()
+
 
 # ---------------- COMMANDS ----------------
 def checkgovil(update, context):
-    latest = fetch_latest_matching_email()
+    with MAIL_LOCK:
+        latest = fetch_latest_matching_email()
 
-    if not latest:
-        update.message.reply_text("No messages")
-        return
+        if not latest:
+            update.message.reply_text("No messages")
+            return
 
-    process_entry(context.bot, update.message.chat.id, latest)
+        ok = process_entry(context.bot, update.message.chat.id, latest)
+
+        if latest["id"] not in cache["gmail"]:
+            cache["gmail"].append(latest["id"])
+            save_cache(cache)
+
+        if not ok:
+            return
 
 
 def testbot(update, context):
@@ -683,9 +707,10 @@ def testbot(update, context):
 
 
 def clearcache(update, context):
-    cache["gmail"] = []
-    cache["gmail_initialized"] = False
-    save_cache(cache)
+    with MAIL_LOCK:
+        cache["gmail"] = []
+        cache["gmail_initialized"] = False
+        save_cache(cache)
     update.message.reply_text("Cache cleared")
 
 
