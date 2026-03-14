@@ -695,12 +695,9 @@ def checkgovil(update, context):
             update.message.reply_text("No messages")
             return
 
-        if latest["id"] in RECENT_SENT_IDS:
-            update.message.reply_text("Latest message already sent.")
-            return
+        ok = process_entry(context.bot, update.message.chat.id, latest)
 
         RECENT_SENT_IDS.add(latest["id"])
-        ok = process_entry(context.bot, update.message.chat.id, latest)
 
         if latest["id"] not in cache["gmail"]:
             cache["gmail"].append(latest["id"])
