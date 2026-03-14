@@ -6,6 +6,7 @@ import imaplib
 import email
 import tempfile
 import threading
+from io import BytesIO
 from datetime import datetime, date
 from email.header import decode_header
 
@@ -133,33 +134,6 @@ def decimal_signed(value, direction):
     return abs(value)
 
 
-def decimal_to_navionics(lat, lon):
-    def one(value, is_lat=True):
-        hemi = "N" if value >= 0 else "S"
-        if not is_lat:
-            hemi = "E" if value >= 0 else "W"
-
-        abs_val = abs(value)
-        deg = int(abs_val)
-        minutes = (abs_val - deg) * 60
-
-        if is_lat:
-            return f"{deg:02d}° {minutes:06.3f}' {hemi}"
-        return f"{deg:03d}° {minutes:06.3f}' {hemi}"
-
-    return f"{one(lat, True)} {one(lon, False)}"
-
-
-def build_coordinate_html(original, lat, lon):
-    url = f"https://maps.google.com/?q={lat},{lon}"
-    nav = decimal_to_navionics(lat, lon)
-
-    return (
-        f'<a href="{url}">{original}</a>'
-        f'\n<code>{html_escape(nav)}</code>'
-    )
-
-
 def replace_coordinates(text, pattern, parser):
     matches = list(pattern.finditer(text))
     replacements = []
@@ -167,8 +141,9 @@ def replace_coordinates(text, pattern, parser):
     for m in matches:
         try:
             lat, lon = parser(m)
+            url = f"https://maps.google.com/?q={lat},{lon}"
             original = m.group(0)
-            html = build_coordinate_html(original, lat, lon)
+            html = f'<a href="{url}">{original}</a>'
             replacements.append((m.start(), m.end(), html))
         except Exception:
             pass
@@ -615,8 +590,7 @@ def extract_pdf(msg):
 
         is_pdf = (
             filename.lower().endswith(".pdf")
-            or content_type == "application/pdf"
-            or content_type == "application/x-pdf"
+            or "pdf" in content_type
             or ("attachment" in disposition and ".pdf" in filename.lower())
         )
 
@@ -626,6 +600,13 @@ def extract_pdf(msg):
                 return file_bytes, (filename or "attachment.pdf")
 
     return None, None
+
+
+def send_pdf_bytes(bot, chat_id, pdf_bytes, pdf_name):
+    bio = BytesIO(pdf_bytes)
+    bio.name = pdf_name or "attachment.pdf"
+    bio.seek(0)
+    bot.send_document(chat_id=chat_id, document=bio)
 
 
 def process_entry(bot, chat_id, entry):
@@ -651,18 +632,7 @@ def process_entry(bot, chat_id, entry):
 
     pdf_bytes, pdf_name = extract_pdf(msg)
     if pdf_bytes:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
-            tmp_pdf.write(pdf_bytes)
-            pdf_path = tmp_pdf.name
-
-        with open(pdf_path, "rb") as f:
-            bot.send_document(chat_id=chat_id, document=f)
-
-        try:
-            os.remove(pdf_path)
-        except Exception:
-            pass
-
+        send_pdf_bytes(bot, chat_id, pdf_bytes, pdf_name)
         pdf_sent = True
 
     if not text_sent and not pdf_sent:
