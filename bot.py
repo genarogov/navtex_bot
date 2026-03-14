@@ -12,7 +12,8 @@ from datetime import datetime, date
 from email.header import decode_header
 
 import requests
-from telegram.ext import Updater, CommandHandler
+from telegram import ReplyKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from docx import Document
 
 # ---------------- ENV ----------------
@@ -40,10 +41,34 @@ NAVAREA_BOX_LAT_MAX = 38.5
 NAVAREA_BOX_LON_MIN = 26.0
 NAVAREA_BOX_LON_MAX = 36.5
 
+# ---------------- WEATHER BUTTONS ----------------
+WEATHER_BUTTONS = [
+    "Acco weather",
+    "Haifa weather",
+    "Herzliya weather",
+    "Tel aviv weather",
+    "Ashdod weather",
+    "Ashkelon weather",
+]
+
+WEATHER_KEYBOARD = [
+    ["Acco weather", "Haifa weather"],
+    ["Herzliya weather", "Tel aviv weather"],
+    ["Ashdod weather", "Ashkelon weather"],
+]
+
 # ---------------- LOCK / DUPLICATE GUARD ----------------
 MAIL_LOCK = threading.Lock()
 RECENT_SENT_IDS = set()
 RECENT_NAVAREA_SENT_IDS = set()
+
+
+def get_main_keyboard():
+    return ReplyKeyboardMarkup(
+        WEATHER_KEYBOARD,
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
 
 
 def load_cache():
@@ -203,7 +228,6 @@ def replace_coordinates(text, pattern, parser):
 def add_coordinate_links(text):
     safe = html_escape(text or "")
 
-    # 0) LAT N LONG E without letters in each line
     pattern_latn_longe = re.compile(
         r'(?:(?:^)|(?:\b\d+\.\s*))'
         r'(?P<lat_deg>\d{1,2})\s+'
@@ -233,7 +257,6 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_latn_longe, parse_latn_longe)
 
-    # 1) DMS
     pattern_dms = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
         r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
@@ -254,7 +277,6 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_dms, parse_dms)
 
-    # 2) DM
     pattern_dm = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
@@ -273,7 +295,6 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_dm, parse_dm)
 
-    # 3) Compact DM
     pattern_compact_dm = re.compile(
         r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lat_dir>[NS])'
@@ -285,7 +306,6 @@ def add_coordinate_links(text):
 
     safe = replace_coordinates(safe, pattern_compact_dm, parse_dm)
 
-    # 4) Decimal
     pattern_decimal = re.compile(
         r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lat_dir>[NS])'
@@ -309,7 +329,6 @@ def extract_coordinates_for_filter(text):
     text = text or ""
     coords = []
 
-    # 0) 35 12 30 033 45 20
     pattern_latn_longe = re.compile(
         r'(?:(?:^)|(?:\b\d+\.\s*))'
         r'(?P<lat_deg>\d{1,2})\s+'
@@ -330,7 +349,6 @@ def extract_coordinates_for_filter(text):
         except Exception:
             pass
 
-    # 1) DMS 42 52.24 N - 031 09.52 E
     pattern_dms = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*'
         r'(?P<lat_min>\d{1,2})\s*[\'′]?\s*'
@@ -352,7 +370,6 @@ def extract_coordinates_for_filter(text):
         except Exception:
             pass
 
-    # 2) DM 40-08.33 N - 006-18.65 E / 33 45.5N 035 12.3E
     pattern_dm = re.compile(
         r'(?P<lat_deg>\d{1,2})\s*[°º]?\s*[-–—:/,\s]?\s*'
         r'(?P<lat_min>\d{1,2}(?:\.\d+)?)\s*[\'′]?\s*'
@@ -372,7 +389,6 @@ def extract_coordinates_for_filter(text):
         except Exception:
             pass
 
-    # 3) Compact DM 3345.5N 03512.3E
     pattern_compact_dm = re.compile(
         r'(?P<lat_deg>\d{2})(?P<lat_min>\d{2}(?:\.\d+)?)\s*'
         r'(?P<lat_dir>[NS])'
@@ -390,7 +406,6 @@ def extract_coordinates_for_filter(text):
         except Exception:
             pass
 
-    # 4) Decimal 33.5 N 35.2 E
     pattern_decimal = re.compile(
         r'(?P<lat>\d{1,2}(?:\.\d+)?)\s*[°º]?\s*'
         r'(?P<lat_dir>[NS])'
@@ -408,7 +423,6 @@ def extract_coordinates_for_filter(text):
         except Exception:
             pass
 
-    # убираем дубли
     uniq = []
     seen = set()
     for lat, lon in coords:
@@ -822,7 +836,6 @@ def fetch_sealagom_page_text():
     r.raise_for_status()
 
     raw = r.text
-
     raw = re.sub(r"(?is)<script.*?>.*?</script>", " ", raw)
     raw = re.sub(r"(?is)<style.*?>.*?</style>", " ", raw)
     raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
@@ -842,14 +855,11 @@ def fetch_sealagom_page_text():
 def extract_navarea_messages(page_text):
     page_text = page_text or ""
 
-    # обрезаем все до первого NAVAREA III - xxxx/yy
     m = re.search(r'NAVAREA\s+III\s*-\s*\d{4}/\d{2}', page_text, re.I)
     if not m:
         return []
 
     text = page_text[m.start():]
-
-    # режем на отдельные сообщения
     parts = re.split(r'(?=NAVAREA\s+III\s*-\s*\d{4}/\d{2})', text, flags=re.I)
     messages = []
 
@@ -864,7 +874,6 @@ def extract_navarea_messages(page_text):
 
         nav_id = id_match.group(1).strip()
 
-        # стоп по мусору интерфейса, если попадется
         part = re.split(
             r'(?:Sign In|Register|Search Messages|View Messages|Download \(|Subscribe\b)',
             part,
@@ -932,6 +941,27 @@ def process_navarea_entry(bot, chat_id, entry):
     return True
 
 
+# ---------------- WEATHER PLACEHOLDERS ----------------
+def build_weather_placeholder(station_name):
+    return (
+        f"{station_name}\n\n"
+        f"Coming soon.\n"
+        f"IMS API token not connected yet."
+    )
+
+
+def handle_weather_button(update, context):
+    text = (update.message.text or "").strip()
+
+    if text not in WEATHER_BUTTONS:
+        return
+
+    update.message.reply_text(
+        build_weather_placeholder(text),
+        reply_markup=get_main_keyboard()
+    )
+
+
 # ---------------- AUTO CHECK ----------------
 def initialize_gmail_cache_silently():
     if cache.get("gmail_initialized"):
@@ -970,7 +1000,6 @@ def auto_check(updater):
         return
 
     try:
-        # Gmail
         initialize_gmail_cache_silently()
         messages = fetch_recent_matching_emails()
 
@@ -987,7 +1016,6 @@ def auto_check(updater):
             if ok:
                 save_cache(cache)
 
-        # SeaLagom / NAVAREA III
         initialize_sealagom_cache_silently()
         nav_messages = fetch_recent_matching_navarea()
 
@@ -1012,12 +1040,19 @@ def auto_check(updater):
 
 
 # ---------------- COMMANDS ----------------
+def start(update, context):
+    update.message.reply_text(
+        "Bot started",
+        reply_markup=get_main_keyboard()
+    )
+
+
 def checkgovil(update, context):
     with MAIL_LOCK:
         latest = fetch_latest_matching_email()
 
         if not latest:
-            update.message.reply_text("No messages")
+            update.message.reply_text("No messages", reply_markup=get_main_keyboard())
             return
 
         ok = process_entry(context.bot, update.message.chat.id, latest)
@@ -1037,7 +1072,7 @@ def checknavarea(update, context):
         latest = fetch_latest_matching_navarea()
 
         if not latest:
-            update.message.reply_text("No NAVAREA III messages in box")
+            update.message.reply_text("No NAVAREA III messages in box", reply_markup=get_main_keyboard())
             return
 
         ok = process_navarea_entry(context.bot, update.message.chat.id, latest)
@@ -1053,7 +1088,7 @@ def checknavarea(update, context):
 
 
 def testbot(update, context):
-    update.message.reply_text("Bot running")
+    update.message.reply_text("Bot running", reply_markup=get_main_keyboard())
 
 
 def clearcache(update, context):
@@ -1065,13 +1100,16 @@ def clearcache(update, context):
         RECENT_SENT_IDS.clear()
         RECENT_NAVAREA_SENT_IDS.clear()
         save_cache(cache)
-    update.message.reply_text("Cache cleared")
+    update.message.reply_text("Cache cleared", reply_markup=get_main_keyboard())
 
 
 def metarea(update, context):
     msg = get_metarea()
-    for chunk in split_html_message(msg, limit=4000):
-        update.message.reply_text(chunk)
+    for i, chunk in enumerate(split_html_message(msg, limit=4000)):
+        if i == 0:
+            update.message.reply_text(chunk, reply_markup=get_main_keyboard())
+        else:
+            update.message.reply_text(chunk)
 
 
 # ---------------- MAIN ----------------
@@ -1079,11 +1117,13 @@ def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
+    dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("checkgovil", checkgovil))
     dp.add_handler(CommandHandler("checknavarea", checknavarea))
     dp.add_handler(CommandHandler("testbot", testbot))
     dp.add_handler(CommandHandler("clearcache", clearcache))
     dp.add_handler(CommandHandler("metarea", metarea))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_weather_button))
 
     updater.start_polling()
     print("BOT STARTED")
