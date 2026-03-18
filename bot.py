@@ -689,6 +689,22 @@ def format_value(value, decimals=1):
         return str(value)
 
 
+def format_or_na(value, decimals=1):
+    if value is None:
+        return "N/A"
+    return format_value(value, decimals)
+
+
+def format_dir_or_na(value):
+    if value is None:
+        return "N/A"
+    try:
+        deg = float(value)
+        return f"{int(round(deg))}° {deg_to_compass(deg)}"
+    except Exception:
+        return str(value)
+
+
 def fetch_sdot_yam_graph(param_ids, include_table_data=0):
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -717,17 +733,19 @@ def fetch_sdot_yam_graph(param_ids, include_table_data=0):
 
 def fetch_sdot_yam_data():
     request_groups = [
-        [117409, 117413],
-        [117413, 117417],
-        [117452, 117453],
-        [117387, 117390, 117417, 117418],
+        [117409, 117413],                    # Wind Direction + Wind Velocity
+        [117413, 117417],                    # Wind Velocity + Hs Wave Height
+        [117452, 117453],                    # Current Velocity 2m + Current Direction 2m
+        [117387, 117390],                    # Water Temperature + Salinity
+        [117387, 117390, 117409, 117413, 117417, 117418],  # table/data group from HAR
     ]
 
     series_by_name = {}
     latest_ts = None
 
     for group in request_groups:
-        payload = fetch_sdot_yam_graph(group)
+        include_table_data = 1 if 117418 in group else 0
+        payload = fetch_sdot_yam_graph(group, include_table_data=include_table_data)
 
         for series in payload.get("graphData", []):
             name = str(series.get("name", "")).strip()
@@ -792,34 +810,9 @@ def find_series(series_by_name, *needles):
     return candidates[0]
 
 
-def format_generic_series_line(item):
-    if not item:
-        return None
-
-    value = item.get("value")
-    if value is None:
-        return None
-
-    unit = item.get("unit") or ""
-    name = item.get("short_name") or item.get("full_name") or "Unknown"
-    low = name.lower()
-
-    if "direction" in low:
-        try:
-            deg = float(value)
-            return f"{name}: {int(round(deg))}° {deg_to_compass(deg)}"
-        except Exception:
-            return f"{name}: {value} {unit}".strip()
-
-    decimals = 2 if ("wave" in low or "height" in low or "period" in low) else 1
-    return f"{name}: {format_value(value, decimals)} {unit}".strip()
-
-
 def build_sdot_yam_message():
     data = fetch_sdot_yam_data()
     series = data.get("series", {})
-
-    lines = ["Sdot Yam buoy real time"]
 
     wave_height = (
         find_series(series, "wave", "height")
@@ -850,95 +843,24 @@ def build_sdot_yam_message():
     )
     salinity = find_series(series, "salinity")
 
-    used_names = set()
-    has_any = False
-
-    if wave_height and wave_height.get("value") is not None:
-        used_names.add(wave_height["short_name"])
-        lines.append(
-            f"Wave height: {format_value(wave_height['value'], 2)} {wave_height['unit']}"
-        )
-        has_any = True
-
-    if wave_period and wave_period.get("value") is not None:
-        used_names.add(wave_period["short_name"])
-        lines.append(
-            f"Wave period: {format_value(wave_period['value'], 2)} {wave_period['unit']}"
-        )
-        has_any = True
-
-    if (
-        wind_velocity and wind_velocity.get("value") is not None and
-        wind_direction and wind_direction.get("value") is not None
-    ):
-        used_names.add(wind_velocity["short_name"])
-        used_names.add(wind_direction["short_name"])
-        wd = float(wind_direction["value"])
-        lines.append(
-            f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']} "
-            f"{deg_to_compass(wd)} ({int(round(wd))}°)"
-        )
-        has_any = True
-    elif wind_velocity and wind_velocity.get("value") is not None:
-        used_names.add(wind_velocity["short_name"])
-        lines.append(
-            f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']}"
-        )
-        has_any = True
-
-    if (
-        current_velocity and current_velocity.get("value") is not None and
-        current_direction and current_direction.get("value") is not None
-    ):
-        used_names.add(current_velocity["short_name"])
-        used_names.add(current_direction["short_name"])
-        cd = float(current_direction["value"])
-        lines.append(
-            f"Current 2m: {format_value(current_velocity['value'], 1)} {current_velocity['unit']} "
-            f"{deg_to_compass(cd)} ({int(round(cd))}°)"
-        )
-        has_any = True
-    elif current_velocity and current_velocity.get("value") is not None:
-        used_names.add(current_velocity["short_name"])
-        lines.append(
-            f"Current 2m: {format_value(current_velocity['value'], 1)} {current_velocity['unit']}"
-        )
-        has_any = True
-
-    if water_temperature and water_temperature.get("value") is not None:
-        used_names.add(water_temperature["short_name"])
-        lines.append(
-            f"Water temperature: {format_value(water_temperature['value'], 1)} {water_temperature['unit']}"
-        )
-        has_any = True
-
-    if salinity and salinity.get("value") is not None:
-        used_names.add(salinity["short_name"])
-        lines.append(
-            f"Salinity: {format_value(salinity['value'], 1)} {salinity['unit']}"
-        )
-        has_any = True
-
-    other_lines = []
-    for name in sorted(series.keys(), key=lambda x: x.lower()):
-        if name in used_names:
-            continue
-
-        line = format_generic_series_line(series[name])
-        if line:
-            other_lines.append(line)
-
-    if other_lines:
-        lines.append("")
-        lines.append("All available data:")
-        lines.extend(other_lines)
+    lines = [
+        "Sdot Yam buoy real time",
+        f"Wave height: {format_or_na(wave_height['value'] if wave_height else None, 2)} {(wave_height['unit'] if wave_height and wave_height.get('value') is not None else 'm')}".rstrip(),
+        f"Wave period: {format_or_na(wave_period['value'] if wave_period else None, 2)} {(wave_period['unit'] if wave_period and wave_period.get('value') is not None else 'sec')}".rstrip(),
+        f"Wind speed: {format_or_na(wind_velocity['value'] if wind_velocity else None, 1)} {(wind_velocity['unit'] if wind_velocity and wind_velocity.get('value') is not None else 'knots')}".rstrip(),
+        f"Wind direction: {format_dir_or_na(wind_direction['value'] if wind_direction else None)}",
+        f"Current velocity 2m: {format_or_na(current_velocity['value'] if current_velocity else None, 1)} {(current_velocity['unit'] if current_velocity and current_velocity.get('value') is not None else 'm/min')}".rstrip(),
+        f"Current direction 2m: {format_dir_or_na(current_direction['value'] if current_direction else None)}",
+        f"Water temperature: {format_or_na(water_temperature['value'] if water_temperature else None, 1)} {(water_temperature['unit'] if water_temperature and water_temperature.get('value') is not None else 'C')}".rstrip(),
+        f"Salinity: {format_or_na(salinity['value'] if salinity else None, 1)} {(salinity['unit'] if salinity and salinity.get('value') is not None else 'PPT')}".rstrip(),
+    ]
 
     latest_ts = data.get("latest_ts")
     if latest_ts:
         dt_utc = datetime.utcfromtimestamp(latest_ts / 1000.0)
         lines.append(f"Updated: {dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    elif not has_any and not other_lines:
-        lines.append("No live numeric data found.")
+    else:
+        lines.append("Updated: N/A")
 
     return "\n".join(lines)
 
