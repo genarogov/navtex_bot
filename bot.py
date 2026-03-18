@@ -683,7 +683,14 @@ def normalize_series_name(name):
 
 
 def fetch_sdot_yam_data():
-    r = requests.get(SDOT_YAM_URL, timeout=20)
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://www.wqdatalive.com",
+        "Referer": "https://www.wqdatalive.com/",
+    }
+
+    r = requests.post(SDOT_YAM_URL, headers=headers, timeout=20)
     r.raise_for_status()
     payload = r.json()
 
