@@ -685,12 +685,26 @@ def normalize_series_name(name):
 def fetch_sdot_yam_data():
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json, text/plain, */*",
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "Origin": "https://www.wqdatalive.com",
-        "Referer": "https://www.wqdatalive.com/",
+        "Referer": "https://www.wqdatalive.com/public/v3/2281",
+        "X-Requested-With": "XMLHttpRequest",
     }
 
-    r = requests.post(SDOT_YAM_URL, headers=headers, timeout=20)
+    data = [
+        ("paramIds[]", "117413"),  # Wind Velocity
+        ("paramIds[]", "117417"),  # Wave Height
+        ("paramIds[]", "117414"),  # Wind Direction
+        ("paramIds[]", "117415"),  # Water Temperature
+        ("paramIds[]", "117416"),  # Current Velocity
+        ("paramIds[]", "117418"),  # Wave Period
+        ("paramIds[]", "117419"),  # Current Direction
+        ("timeRange", "last_day"),
+        ("includeTableData", "0"),
+    ]
+
+    r = requests.post(SDOT_YAM_URL, headers=headers, data=data, timeout=20)
     r.raise_for_status()
     payload = r.json()
 
@@ -710,10 +724,7 @@ def fetch_sdot_yam_data():
             continue
 
         series_by_name[short_name] = {
-            "full_name": name,
-            "short_name": short_name,
             "unit": unit,
-            "param_id": series.get("paramId"),
             "timestamp_ms": ts,
             "value": value,
         }
