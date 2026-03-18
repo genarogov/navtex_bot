@@ -8,7 +8,7 @@ import tempfile
 import threading
 import html
 from io import BytesIO
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from email.header import decode_header
 
 import requests
@@ -60,6 +60,15 @@ IMS_STATIONS = {
     "Tel Aviv Coast weather": "TEL AVIV COAST",
     "Ashdod Port weather": "ASHDOD PORT",
     "Ashqelon Port weather": "ASHQELON PORT",
+}
+
+IMS_PRESSURE_STATIONS = {
+    "HAIFA TECHNION": "AFEQ",
+    "EN KARMEL": "AFEQ",
+    "HADERA PORT": "BET DAGAN",
+    "TEL AVIV COAST": "BET DAGAN",
+    "ASHDOD PORT": "BET DAGAN",
+    "ASHQELON PORT": "BET DAGAN",
 }
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
@@ -987,7 +996,7 @@ def build_shikoma_message():
         try:
             dt_obj = datetime.fromisoformat(dt_raw.replace("Z", "+00:00"))
             if dt_obj.tzinfo is not None:
-                dt_obj = dt_obj.astimezone().replace(tzinfo=None)
+                dt_obj = dt_obj.astimezone(timezone.utc).replace(tzinfo=None)
             dt_out = format_navstyle_datetime(dt_obj)
         except Exception:
             dt_out = dt_raw
@@ -1079,6 +1088,35 @@ def get_latest_observation_for_station(observations, station_name):
     return latest_obs
 
 
+def get_latest_pressure_for_station(observations, pressure_station_name):
+    latest_obs = None
+    latest_dt = None
+    wanted = (pressure_station_name or "").strip().upper()
+
+    for obs in observations:
+        current_name = (obs.get("stn_name") or "").strip().upper()
+        if current_name != wanted:
+            continue
+
+        if not obs.get("BP"):
+            continue
+
+        time_obs = obs.get("time_obs")
+        if not time_obs:
+            continue
+
+        try:
+            dt = datetime.fromisoformat(time_obs)
+        except Exception:
+            continue
+
+        if latest_dt is None or dt > latest_dt:
+            latest_dt = dt
+            latest_obs = obs
+
+    return latest_obs
+
+
 def build_ims_weather_message(station_name):
     observations = fetch_ims_observations()
     obs = get_latest_observation_for_station(observations, station_name)
@@ -1092,6 +1130,13 @@ def build_ims_weather_message(station_name):
     except Exception:
         updated = "N/A"
 
+    pressure_value = obs.get("BP")
+    pressure_station_name = IMS_PRESSURE_STATIONS.get((station_name or "").strip().upper())
+    if pressure_station_name:
+        pressure_obs = get_latest_pressure_for_station(observations, pressure_station_name)
+        if pressure_obs and pressure_obs.get("BP"):
+            pressure_value = pressure_obs.get("BP")
+
     wind_kn = ms_to_knots(obs.get("WS"))
     gust_kn = ms_to_knots(obs.get("WSmax"))
 
@@ -1103,7 +1148,7 @@ def build_ims_weather_message(station_name):
         f"Updated: {updated}\n\n"
         f"Air temperature: {obs.get('TD') or 'N/A'} °C\n"
         f"Humidity: {obs.get('RH') or 'N/A'} %\n"
-        f"Pressure: {obs.get('BP') or 'N/A'}\n"
+        f"Pressure: {pressure_value or 'N/A'}\n"
         f"Rain: {obs.get('Rain') or 'N/A'} mm\n"
         f"Wind: {wind_str}\n"
         f"Max gust: {gust_str}"
