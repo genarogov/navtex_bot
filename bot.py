@@ -12,6 +12,7 @@ from datetime import datetime, date
 from email.header import decode_header
 
 import requests
+import xml.etree.ElementTree as ET
 from telegram import ReplyKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from docx import Document
@@ -49,24 +50,39 @@ SDOT_YAM_URL = "https://www.wqdatalive.com/public/v3/2281/graphdatamultiple"
 SHIKOMA_BUTTON = "Shikoma buoy real time"
 SHIKOMA_WAVES_URL = "https://isramar.ocean.org.il/isramar2009/station/data/ShikBuoy_HS_Per.json"
 
+# ---------------- IMS WEATHER ----------------
+IMS_XML_URL = "https://ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml"
+
+IMS_STATIONS = {
+    "Haifa Airport weather": "Haifa Airport",
+    "En Karmel weather": "En Karmel",
+    "Hadera Port weather": "Hadera Port",
+    "Tel Aviv Coast weather": "Tel Aviv Coast",
+    "Ashdod Port weather": "Ashdod Port",
+    "Ashqelon Port weather": "Ashqelon Port",
+}
+
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
 FORECAST_BUTTON = "Forecast Taurus, Delta, Crusade"
 
 WEATHER_BUTTONS = [
     SHIKOMA_BUTTON,
     SDOT_YAM_BUTTON,
-    "Herzliya weather",
-    "Tel aviv weather",
-    "Ashdod weather",
-    "Ashkelon weather",
+    "Haifa Airport weather",
+    "En Karmel weather",
+    "Hadera Port weather",
+    "Tel Aviv Coast weather",
+    "Ashdod Port weather",
+    "Ashqelon Port weather",
 ]
 
 WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
     [SHIKOMA_BUTTON],
     [SDOT_YAM_BUTTON],
-    ["Herzliya weather", "Tel aviv weather"],
-    ["Ashdod weather", "Ashkelon weather"],
+    ["Haifa Airport weather", "En Karmel weather"],
+    ["Hadera Port weather", "Tel Aviv Coast weather"],
+    ["Ashdod Port weather", "Ashqelon Port weather"],
 ]
 
 # ---------------- LOCK / DUPLICATE GUARD ----------------
@@ -623,6 +639,24 @@ def format_zone_lines(zone_name, lines):
     return f"📍 {zone_name}\n{text}"
 
 
+def normalize_metarea_issued_line(issued_line):
+    issued_line = (issued_line or "").strip()
+    if not issued_line:
+        return "Issued: ATHENS\nN/A"
+
+    upper = issued_line.upper()
+
+    if upper.startswith("ISSUED:"):
+        upper = upper[len("ISSUED:"):].strip()
+
+    parts = [x.strip() for x in upper.split(",", 1)]
+    if len(parts) == 2 and parts[0] and parts[1]:
+        city, dt_part = parts[0], parts[1]
+        return f"Issued: {city}\n{dt_part}"
+
+    return f"Issued: ATHENS\n{upper}"
+
+
 def get_metarea():
     try:
         data = fetch_metarea_json()
@@ -643,10 +677,10 @@ def get_metarea():
 
         zone_blocks = extract_zone_blocks_from_lines(lines)
         if not zone_blocks:
-            return f"🕒 Issued: {issued}\n\nMETAREA zone markers not found."
+            return f"{normalize_metarea_issued_line(issued)}\n\nMETAREA zone markers not found."
 
         msg = (
-            f"🕒 Issued: {issued}\n\n"
+            f"{normalize_metarea_issued_line(issued)}\n\n"
             f"{format_zone_lines('TAURUS', zone_blocks['TAURUS'])}\n\n"
             f"{format_zone_lines('DELTA', zone_blocks['DELTA'])}\n\n"
             f"{format_zone_lines('CRUSADE', zone_blocks['CRUSADE'])}"
@@ -674,9 +708,16 @@ def get_last_valid_point(points):
 
 
 def deg_to_compass(deg):
+    if deg in (None, "", "N/A"):
+        return "N/A"
+    try:
+        deg = float(deg)
+    except Exception:
+        return "N/A"
+
     dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
             "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-    return dirs[round(float(deg) / 22.5) % 16]
+    return dirs[int((deg + 11.25) / 22.5) % 16]
 
 
 def normalize_series_name(name):
@@ -695,6 +736,15 @@ def format_value(value, decimals=1):
 
 def m_per_min_to_knots(value):
     return float(value) / 30.8666667
+
+
+def ms_to_knots(value):
+    if value in (None, "", "N/A"):
+        return None
+    try:
+        return round(float(value) * 1.94384, 1)
+    except Exception:
+        return None
 
 
 def fetch_sdot_yam_graph(param_ids, include_table_data=0):
@@ -925,6 +975,117 @@ def build_shikoma_message():
     lines.append(f"Updated: {dt}")
 
     return "\n".join(lines)
+
+
+# ---------------- IMS WEATHER ----------------
+def safe_xml_text(node, tag):
+    el = node.find(tag)
+    if el is None or el.text is None:
+        return None
+    text = el.text.strip()
+    return text if text else None
+
+
+def fetch_ims_observations():
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/xml,text/xml,*/*",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    r = requests.get(IMS_XML_URL, headers=headers, timeout=20)
+    r.raise_for_status()
+
+    root = ET.fromstring(r.content)
+    observations = []
+
+    for obs in root.findall("Observation"):
+        observations.append({
+            "stn_name": safe_xml_text(obs, "stn_name"),
+            "stn_num": safe_xml_text(obs, "stn_num"),
+            "time_obs": safe_xml_text(obs, "time_obs"),
+            "TD": safe_xml_text(obs, "TD"),
+            "RH": safe_xml_text(obs, "RH"),
+            "BP": safe_xml_text(obs, "BP"),
+            "Rain": safe_xml_text(obs, "Rain"),
+            "WS": safe_xml_text(obs, "WS"),
+            "WD": safe_xml_text(obs, "WD"),
+            "WSmax": safe_xml_text(obs, "WSmax"),
+            "WDmax": safe_xml_text(obs, "WDmax"),
+        })
+
+    return observations
+
+
+def get_latest_observation_for_station(observations, station_name):
+    latest_obs = None
+    latest_dt = None
+
+    for obs in observations:
+        if (obs.get("stn_name") or "").strip() != station_name:
+            continue
+
+        time_obs = obs.get("time_obs")
+        if not time_obs:
+            continue
+
+        try:
+            dt = datetime.fromisoformat(time_obs)
+        except Exception:
+            continue
+
+        if latest_dt is None or dt > latest_dt:
+            latest_dt = dt
+            latest_obs = obs
+
+    return latest_obs
+
+
+def format_ims_datetime_utc(dt_str):
+    if not dt_str:
+        return "N/A"
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        return dt.strftime("%d %B %Y / %H%M UTC").upper()
+    except Exception:
+        return "N/A"
+
+
+def format_direction_with_degrees(deg_value):
+    if deg_value in (None, "", "N/A"):
+        return "N/A"
+
+    try:
+        deg_float = float(deg_value)
+        deg_int = int(round(deg_float))
+        return f"{deg_to_compass(deg_float)} ({deg_int}°)"
+    except Exception:
+        return "N/A"
+
+
+def build_ims_weather_message(station_name):
+    observations = fetch_ims_observations()
+    obs = get_latest_observation_for_station(observations, station_name)
+
+    if not obs:
+        return f"📍 {station_name}\nNo data."
+
+    wind_kn = ms_to_knots(obs.get("WS"))
+    gust_kn = ms_to_knots(obs.get("WSmax"))
+
+    wind_str = f"{wind_kn:.1f} kn, {format_direction_with_degrees(obs.get('WD'))}" if wind_kn is not None else "N/A"
+    gust_str = f"{gust_kn:.1f} kn, {format_direction_with_degrees(obs.get('WDmax'))}" if gust_kn is not None else "N/A"
+
+    return (
+        f"📍 {station_name}\n"
+        f"{format_ims_datetime_utc(obs.get('time_obs'))}\n\n"
+        f"Air temperature: {obs.get('TD') or 'N/A'} °C\n"
+        f"Humidity: {obs.get('RH') or 'N/A'} %\n"
+        f"Pressure: {obs.get('BP') or 'N/A'}\n"
+        f"Rain: {obs.get('Rain') or 'N/A'} mm\n"
+        f"Wind: {wind_str}\n"
+        f"Max gust: {gust_str}"
+    )
 
 
 # ---------------- GMAIL ----------------
@@ -1222,20 +1383,12 @@ def process_navarea_entry(bot, chat_id, entry):
 
 
 # ---------------- WEATHER / BUOY BUTTONS ----------------
-def build_weather_placeholder(station_name):
-    return (
-        f"{station_name}\n\n"
-        f"Coming soon.\n"
-        f"IMS API token not connected yet."
-    )
-
-
 def handle_weather_button(update, context):
     text = (update.message.text or "").strip()
 
     if text == FORECAST_BUTTON:
         msg = get_metarea()
-        for i, chunk in enumerate(split_html_message(msg, limit=4000)):
+        for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
             if i == 0:
                 update.message.reply_text(
                     chunk,
@@ -1277,13 +1430,24 @@ def handle_weather_button(update, context):
                 update.message.reply_text(chunk)
         return
 
-    if text not in WEATHER_BUTTONS:
+    if text in IMS_STATIONS:
+        try:
+            msg = build_ims_weather_message(IMS_STATIONS[text])
+        except Exception as e:
+            msg = f"IMS weather error: {e}"
+
+        for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
+            if i == 0:
+                update.message.reply_text(
+                    chunk,
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                update.message.reply_text(chunk)
         return
 
-    update.message.reply_text(
-        build_weather_placeholder(text),
-        reply_markup=get_main_keyboard()
-    )
+    if text not in WEATHER_BUTTONS:
+        return
 
 
 # ---------------- AUTO CHECK ----------------
@@ -1429,7 +1593,7 @@ def clearcache(update, context):
 
 def metarea(update, context):
     msg = get_metarea()
-    for i, chunk in enumerate(split_html_message(msg, limit=4000)):
+    for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
         if i == 0:
             update.message.reply_text(chunk, reply_markup=get_main_keyboard())
         else:
