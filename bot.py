@@ -45,11 +45,15 @@ NAVAREA_BOX_LON_MAX = 36.5
 SDOT_YAM_BUTTON = "Sdot Yam buoy real time"
 SDOT_YAM_URL = "https://www.wqdatalive.com/public/v3/2281/graphdatamultiple"
 
+# ---------------- SHIKOMA / ISRAMAR ----------------
+SHIKOMA_BUTTON = "Shikoma buoy real time"
+SHIKOMA_WAVES_URL = "https://isramar.ocean.org.il/isramar2009/station/data/ShikBuoy_HS_Per.json"
+
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
 FORECAST_BUTTON = "Forecast Taurus, Delta, Crusade"
 
 WEATHER_BUTTONS = [
-    "Acco weather",
+    SHIKOMA_BUTTON,
     SDOT_YAM_BUTTON,
     "Herzliya weather",
     "Tel aviv weather",
@@ -59,7 +63,7 @@ WEATHER_BUTTONS = [
 
 WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
-    ["Acco weather"],
+    [SHIKOMA_BUTTON],
     [SDOT_YAM_BUTTON],
     ["Herzliya weather", "Tel aviv weather"],
     ["Ashdod weather", "Ashkelon weather"],
@@ -858,6 +862,88 @@ def build_sdot_yam_message():
     return "\n".join(lines)
 
 
+# ---------------- SHIKOMA / ISRAMAR ----------------
+def fetch_json(url):
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    r = requests.get(url, headers=headers, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def walk_numbers(value, found=None):
+    if found is None:
+        found = []
+
+    if isinstance(value, dict):
+        for v in value.values():
+            walk_numbers(v, found)
+    elif isinstance(value, list):
+        if len(value) >= 2:
+            try:
+                ts = value[0]
+                val = value[1]
+                if isinstance(val, (int, float)):
+                    found.append((ts, val))
+                    return found
+            except Exception:
+                pass
+        for item in value:
+            walk_numbers(item, found)
+
+    return found
+
+
+def get_last_numeric_pair_from_json(payload):
+    pairs = walk_numbers(payload, [])
+    for item in reversed(pairs):
+        try:
+            if item[1] is not None:
+                return item
+        except Exception:
+            pass
+    return None
+
+
+def build_shikoma_message():
+    lines = ["Shikoma buoy real time"]
+
+    try:
+        payload = fetch_json(SHIKOMA_WAVES_URL)
+    except Exception as e:
+        return f"Shikoma buoy error: {e}"
+
+    pair = get_last_numeric_pair_from_json(payload)
+
+    if pair:
+        ts, value = pair
+        try:
+            lines.append(f"Wave data: {float(value):.2f}")
+        except Exception:
+            lines.append(f"Wave data: {value}")
+
+        try:
+            if isinstance(ts, (int, float)):
+                if ts > 10_000_000_000:
+                    dt_utc = datetime.utcfromtimestamp(ts / 1000.0)
+                else:
+                    dt_utc = datetime.utcfromtimestamp(ts)
+                lines.append(f"Updated: {dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        except Exception:
+            pass
+    else:
+        lines.append("No live wave data found.")
+
+    lines.append("Wind / air temperature / pressure endpoints are not identified yet.")
+
+    return "\n".join(lines)
+
+
 # ---------------- GMAIL ----------------
 def connect_gmail():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
@@ -1181,6 +1267,22 @@ def handle_weather_button(update, context):
             msg = build_sdot_yam_message()
         except Exception as e:
             msg = f"Sdot Yam buoy error: {e}"
+
+        for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
+            if i == 0:
+                update.message.reply_text(
+                    chunk,
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                update.message.reply_text(chunk)
+        return
+
+    if text == SHIKOMA_BUTTON:
+        try:
+            msg = build_shikoma_message()
+        except Exception as e:
+            msg = f"Shikoma buoy error: {e}"
 
         for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
             if i == 0:
