@@ -54,12 +54,12 @@ SHIKOMA_WAVES_URL = "https://isramar.ocean.org.il/isramar2009/station/data/ShikB
 IMS_XML_URL = "https://ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml"
 
 IMS_STATIONS = {
-    "Haifa Airport weather": "Haifa Airport",
-    "En Karmel weather": "En Karmel",
-    "Hadera Port weather": "Hadera Port",
-    "Tel Aviv Coast weather": "Tel Aviv Coast",
-    "Ashdod Port weather": "Ashdod Port",
-    "Ashqelon Port weather": "Ashqelon Port",
+    "Haifa Technion weather": "HAIFA TECHNION",
+    "En Karmel weather": "EN KARMEL",
+    "Hadera Port weather": "HADERA PORT",
+    "Tel Aviv Coast weather": "TEL AVIV COAST",
+    "Ashdod Port weather": "ASHDOD PORT",
+    "Ashqelon Port weather": "ASHQELON PORT",
 }
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
@@ -68,7 +68,7 @@ FORECAST_BUTTON = "Forecast Taurus, Delta, Crusade"
 WEATHER_BUTTONS = [
     SHIKOMA_BUTTON,
     SDOT_YAM_BUTTON,
-    "Haifa Airport weather",
+    "Haifa Technion weather",
     "En Karmel weather",
     "Hadera Port weather",
     "Tel Aviv Coast weather",
@@ -80,7 +80,7 @@ WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
     [SHIKOMA_BUTTON],
     [SDOT_YAM_BUTTON],
-    ["Haifa Airport weather", "En Karmel weather"],
+    ["Haifa Technion weather", "En Karmel weather"],
     ["Hadera Port weather", "Tel Aviv Coast weather"],
     ["Ashdod Port weather", "Ashqelon Port weather"],
 ]
@@ -209,6 +209,57 @@ def split_plain_message(text, limit=4000):
         text = text[cut:].lstrip()
 
     return parts or [""]
+
+
+def deg_to_compass(deg):
+    if deg in (None, "", "N/A"):
+        return "N/A"
+    try:
+        deg = float(deg)
+    except Exception:
+        return "N/A"
+
+    dirs = [
+        "N", "NNE", "NE", "ENE",
+        "E", "ESE", "SE", "SSE",
+        "S", "SSW", "SW", "WSW",
+        "W", "WNW", "NW", "NNW"
+    ]
+    return dirs[int((deg + 11.25) / 22.5) % 16]
+
+
+def ms_to_knots(value):
+    if value in (None, "", "N/A"):
+        return None
+    try:
+        return round(float(value) * 1.94384, 1)
+    except Exception:
+        return None
+
+
+def m_per_min_to_knots(value):
+    try:
+        return float(value) / 30.8666667
+    except Exception:
+        return None
+
+
+def format_navstyle_datetime(dt):
+    if not dt:
+        return "N/A"
+    return dt.strftime("%d %B %Y / %H%M UTC").upper()
+
+
+def format_direction_with_degrees(deg_value):
+    if deg_value in (None, "", "N/A"):
+        return "N/A"
+
+    try:
+        deg_float = float(deg_value)
+        deg_int = int(round(deg_float))
+        return f"{deg_to_compass(deg_float)} ({deg_int}°)"
+    except Exception:
+        return "N/A"
 
 
 # ---------------- COORDINATES ----------------
@@ -707,19 +758,6 @@ def get_last_valid_point(points):
     return None, None
 
 
-def deg_to_compass(deg):
-    if deg in (None, "", "N/A"):
-        return "N/A"
-    try:
-        deg = float(deg)
-    except Exception:
-        return "N/A"
-
-    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-    return dirs[int((deg + 11.25) / 22.5) % 16]
-
-
 def normalize_series_name(name):
     prefix = "Sdot Yam 10m : "
     if name.startswith(prefix):
@@ -732,19 +770,6 @@ def format_value(value, decimals=1):
         return f"{float(value):.{decimals}f}"
     except Exception:
         return str(value)
-
-
-def m_per_min_to_knots(value):
-    return float(value) / 30.8666667
-
-
-def ms_to_knots(value):
-    if value in (None, "", "N/A"):
-        return None
-    try:
-        return round(float(value) * 1.94384, 1)
-    except Exception:
-        return None
 
 
 def fetch_sdot_yam_graph(param_ids, include_table_data=0):
@@ -852,7 +877,16 @@ def build_sdot_yam_message():
     data = fetch_sdot_yam_data()
     series = data.get("series", {})
 
-    lines = ["Sdot Yam buoy real time"]
+    lines = ["📍 Sdot Yam buoy"]
+
+    latest_ts = data.get("latest_ts")
+    if latest_ts:
+        dt_utc = datetime.utcfromtimestamp(latest_ts / 1000.0)
+        lines.append(f"Updated: {format_navstyle_datetime(dt_utc)}")
+    else:
+        lines.append("Updated: N/A")
+
+    lines.append("")
 
     wind_velocity = (
         find_series(series, "wind", "velocity")
@@ -896,18 +930,9 @@ def build_sdot_yam_message():
                 f"{deg_to_compass(cd)} ({int(round(cd))}°)"
             )
         else:
-            lines.append(
-                f"Current 2m: {format_value(current_knots, 1)} knots"
-            )
+            lines.append(f"Current 2m: {format_value(current_knots, 1)} knots")
     else:
         lines.append("Current 2m: N/A")
-
-    latest_ts = data.get("latest_ts")
-    if latest_ts:
-        dt_utc = datetime.utcfromtimestamp(latest_ts / 1000.0)
-        lines.append(f"Updated: {dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    else:
-        lines.append("Updated: N/A")
 
     return "\n".join(lines)
 
@@ -932,7 +957,7 @@ def build_shikoma_message():
     except Exception as e:
         return f"Shikoma buoy error: {e}"
 
-    dt = str(payload.get("datetime") or "N/A").strip()
+    dt_raw = str(payload.get("datetime") or "").strip()
     params = payload.get("parameters") or []
 
     hs = None
@@ -955,7 +980,20 @@ def build_shikoma_message():
         elif "maximal wave height" in name:
             hmax = (value, units)
 
-    lines = ["Shikoma buoy real time"]
+    lines = ["📍 Shikoma buoy"]
+
+    dt_out = "N/A"
+    if dt_raw:
+        try:
+            dt_obj = datetime.fromisoformat(dt_raw.replace("Z", "+00:00"))
+            if dt_obj.tzinfo is not None:
+                dt_obj = dt_obj.astimezone().replace(tzinfo=None)
+            dt_out = format_navstyle_datetime(dt_obj)
+        except Exception:
+            dt_out = dt_raw
+
+    lines.append(f"Updated: {dt_out}")
+    lines.append("")
 
     if hs and hs[0] is not None:
         lines.append(f"Significant wave height: {float(hs[0]):.2f} {hs[1]}")
@@ -971,8 +1009,6 @@ def build_shikoma_message():
         lines.append(f"Maximal wave height: {float(hmax[0]):.2f} {hmax[1]}")
     else:
         lines.append("Maximal wave height: N/A")
-
-    lines.append(f"Updated: {dt}")
 
     return "\n".join(lines)
 
@@ -1020,9 +1056,11 @@ def fetch_ims_observations():
 def get_latest_observation_for_station(observations, station_name):
     latest_obs = None
     latest_dt = None
+    wanted = (station_name or "").strip().upper()
 
     for obs in observations:
-        if (obs.get("stn_name") or "").strip() != station_name:
+        current_name = (obs.get("stn_name") or "").strip().upper()
+        if current_name != wanted:
             continue
 
         time_obs = obs.get("time_obs")
@@ -1041,34 +1079,18 @@ def get_latest_observation_for_station(observations, station_name):
     return latest_obs
 
 
-def format_ims_datetime_utc(dt_str):
-    if not dt_str:
-        return "N/A"
-    try:
-        dt = datetime.fromisoformat(dt_str)
-        return dt.strftime("%d %B %Y / %H%M UTC").upper()
-    except Exception:
-        return "N/A"
-
-
-def format_direction_with_degrees(deg_value):
-    if deg_value in (None, "", "N/A"):
-        return "N/A"
-
-    try:
-        deg_float = float(deg_value)
-        deg_int = int(round(deg_float))
-        return f"{deg_to_compass(deg_float)} ({deg_int}°)"
-    except Exception:
-        return "N/A"
-
-
 def build_ims_weather_message(station_name):
     observations = fetch_ims_observations()
     obs = get_latest_observation_for_station(observations, station_name)
 
     if not obs:
         return f"📍 {station_name}\nNo data."
+
+    try:
+        dt = datetime.fromisoformat(obs.get("time_obs"))
+        updated = format_navstyle_datetime(dt)
+    except Exception:
+        updated = "N/A"
 
     wind_kn = ms_to_knots(obs.get("WS"))
     gust_kn = ms_to_knots(obs.get("WSmax"))
@@ -1078,7 +1100,7 @@ def build_ims_weather_message(station_name):
 
     return (
         f"📍 {station_name}\n"
-        f"{format_ims_datetime_utc(obs.get('time_obs'))}\n\n"
+        f"Updated: {updated}\n\n"
         f"Air temperature: {obs.get('TD') or 'N/A'} °C\n"
         f"Humidity: {obs.get('RH') or 'N/A'} %\n"
         f"Pressure: {obs.get('BP') or 'N/A'}\n"
