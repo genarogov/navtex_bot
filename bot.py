@@ -876,70 +876,53 @@ def fetch_json(url):
     return r.json()
 
 
-def walk_numbers(value, found=None):
-    if found is None:
-        found = []
-
-    if isinstance(value, dict):
-        for v in value.values():
-            walk_numbers(v, found)
-    elif isinstance(value, list):
-        if len(value) >= 2:
-            try:
-                ts = value[0]
-                val = value[1]
-                if isinstance(val, (int, float)):
-                    found.append((ts, val))
-                    return found
-            except Exception:
-                pass
-        for item in value:
-            walk_numbers(item, found)
-
-    return found
-
-
-def get_last_numeric_pair_from_json(payload):
-    pairs = walk_numbers(payload, [])
-    for item in reversed(pairs):
-        try:
-            if item[1] is not None:
-                return item
-        except Exception:
-            pass
-    return None
-
-
 def build_shikoma_message():
-    lines = ["Shikoma buoy real time"]
-
     try:
         payload = fetch_json(SHIKOMA_WAVES_URL)
     except Exception as e:
         return f"Shikoma buoy error: {e}"
 
-    pair = get_last_numeric_pair_from_json(payload)
+    dt = str(payload.get("datetime") or "N/A").strip()
+    params = payload.get("parameters") or []
 
-    if pair:
-        ts, value = pair
-        try:
-            lines.append(f"Wave data: {float(value):.2f}")
-        except Exception:
-            lines.append(f"Wave data: {value}")
+    hs = None
+    tp = None
+    hmax = None
 
-        try:
-            if isinstance(ts, (int, float)):
-                if ts > 10_000_000_000:
-                    dt_utc = datetime.utcfromtimestamp(ts / 1000.0)
-                else:
-                    dt_utc = datetime.utcfromtimestamp(ts)
-                lines.append(f"Updated: {dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-        except Exception:
-            pass
+    for p in params:
+        name = str(p.get("name") or "").strip().lower()
+        units = str(p.get("units") or "").strip()
+        values = p.get("values") or []
+
+        value = None
+        if isinstance(values, list) and values:
+            value = values[0]
+
+        if "significant wave height" in name:
+            hs = (value, units)
+        elif "peak wave period" in name:
+            tp = (value, units)
+        elif "maximal wave height" in name:
+            hmax = (value, units)
+
+    lines = ["Shikoma buoy real time"]
+
+    if hs and hs[0] is not None:
+        lines.append(f"Significant wave height: {float(hs[0]):.2f} {hs[1]}")
     else:
-        lines.append("No live wave data found.")
+        lines.append("Significant wave height: N/A")
 
-    lines.append("Wind / air temperature / pressure endpoints are not identified yet.")
+    if tp and tp[0] is not None:
+        lines.append(f"Peak wave period: {float(tp[0]):.1f} {tp[1]}")
+    else:
+        lines.append("Peak wave period: N/A")
+
+    if hmax and hmax[0] is not None:
+        lines.append(f"Maximal wave height: {float(hmax[0]):.2f} {hmax[1]}")
+    else:
+        lines.append("Maximal wave height: N/A")
+
+    lines.append(f"Updated: {dt}")
 
     return "\n".join(lines)
 
