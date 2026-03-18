@@ -689,20 +689,8 @@ def format_value(value, decimals=1):
         return str(value)
 
 
-def format_or_na(value, decimals=1):
-    if value is None:
-        return "N/A"
-    return format_value(value, decimals)
-
-
-def format_dir_or_na(value):
-    if value is None:
-        return "N/A"
-    try:
-        deg = float(value)
-        return f"{int(round(deg))}° {deg_to_compass(deg)}"
-    except Exception:
-        return str(value)
+def m_per_min_to_knots(value):
+    return float(value) / 30.8666667
 
 
 def fetch_sdot_yam_graph(param_ids, include_table_data=0):
@@ -733,19 +721,15 @@ def fetch_sdot_yam_graph(param_ids, include_table_data=0):
 
 def fetch_sdot_yam_data():
     request_groups = [
-        [117409, 117413],                    # Wind Direction + Wind Velocity
-        [117413, 117417],                    # Wind Velocity + Hs Wave Height
-        [117452, 117453],                    # Current Velocity 2m + Current Direction 2m
-        [117387, 117390],                    # Water Temperature + Salinity
-        [117387, 117390, 117409, 117413, 117417, 117418],  # table/data group from HAR
+        [117409, 117413],  # Wind Direction + Wind Velocity
+        [117452, 117453],  # Current Velocity 2m + Current Direction 2m
     ]
 
     series_by_name = {}
     latest_ts = None
 
     for group in request_groups:
-        include_table_data = 1 if 117418 in group else 0
-        payload = fetch_sdot_yam_graph(group, include_table_data=include_table_data)
+        payload = fetch_sdot_yam_graph(group)
 
         for series in payload.get("graphData", []):
             name = str(series.get("name", "")).strip()
@@ -814,20 +798,14 @@ def build_sdot_yam_message():
     data = fetch_sdot_yam_data()
     series = data.get("series", {})
 
-    wave_height = (
-        find_series(series, "wave", "height")
-        or find_series(series, "hs", "wave", "height")
-    )
-    wave_period = (
-        find_series(series, "wave", "period")
-        or find_series(series, "tp", "dpd")
-        or find_series(series, "period")
-    )
+    lines = ["Sdot Yam buoy real time"]
+
     wind_velocity = (
         find_series(series, "wind", "velocity")
         or find_series(series, "wind", "speed")
     )
     wind_direction = find_series(series, "wind", "direction")
+
     current_velocity = (
         find_series(series, "current", "velocity", "2m")
         or find_series(series, "current", "speed", "2m")
@@ -837,23 +815,38 @@ def build_sdot_yam_message():
         find_series(series, "current", "direction", "2m")
         or find_series(series, "current", "direction")
     )
-    water_temperature = (
-        find_series(series, "water", "temperature")
-        or find_series(series, "temperature")
-    )
-    salinity = find_series(series, "salinity")
 
-    lines = [
-        "Sdot Yam buoy real time",
-        f"Wave height: {format_or_na(wave_height['value'] if wave_height else None, 2)} {(wave_height['unit'] if wave_height and wave_height.get('value') is not None else 'm')}".rstrip(),
-        f"Wave period: {format_or_na(wave_period['value'] if wave_period else None, 2)} {(wave_period['unit'] if wave_period and wave_period.get('value') is not None else 'sec')}".rstrip(),
-        f"Wind speed: {format_or_na(wind_velocity['value'] if wind_velocity else None, 1)} {(wind_velocity['unit'] if wind_velocity and wind_velocity.get('value') is not None else 'knots')}".rstrip(),
-        f"Wind direction: {format_dir_or_na(wind_direction['value'] if wind_direction else None)}",
-        f"Current velocity 2m: {format_or_na(current_velocity['value'] if current_velocity else None, 1)} {(current_velocity['unit'] if current_velocity and current_velocity.get('value') is not None else 'm/min')}".rstrip(),
-        f"Current direction 2m: {format_dir_or_na(current_direction['value'] if current_direction else None)}",
-        f"Water temperature: {format_or_na(water_temperature['value'] if water_temperature else None, 1)} {(water_temperature['unit'] if water_temperature and water_temperature.get('value') is not None else 'C')}".rstrip(),
-        f"Salinity: {format_or_na(salinity['value'] if salinity else None, 1)} {(salinity['unit'] if salinity and salinity.get('value') is not None else 'PPT')}".rstrip(),
-    ]
+    if (
+        wind_velocity and wind_velocity.get("value") is not None and
+        wind_direction and wind_direction.get("value") is not None
+    ):
+        wd = float(wind_direction["value"])
+        lines.append(
+            f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']} "
+            f"{deg_to_compass(wd)} ({int(round(wd))}°)"
+        )
+    elif wind_velocity and wind_velocity.get("value") is not None:
+        lines.append(
+            f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']}"
+        )
+    else:
+        lines.append("Wind: N/A")
+
+    if current_velocity and current_velocity.get("value") is not None:
+        current_knots = m_per_min_to_knots(current_velocity["value"])
+
+        if current_direction and current_direction.get("value") is not None:
+            cd = float(current_direction["value"])
+            lines.append(
+                f"Current 2m: {format_value(current_knots, 1)} knots "
+                f"{deg_to_compass(cd)} ({int(round(cd))}°)"
+            )
+        else:
+            lines.append(
+                f"Current 2m: {format_value(current_knots, 1)} knots"
+            )
+    else:
+        lines.append("Current 2m: N/A")
 
     latest_ts = data.get("latest_ts")
     if latest_ts:
