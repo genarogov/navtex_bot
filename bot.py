@@ -689,37 +689,7 @@ def format_value(value, decimals=1):
         return str(value)
 
 
-def chunked(seq, size):
-    out = []
-    seq = list(seq or [])
-    for i in range(0, len(seq), size):
-        out.append(seq[i:i + size])
-    return out
-
-
-def uniq_ints(values):
-    out = []
-    seen = set()
-
-    for v in values or []:
-        try:
-            n = int(str(v).strip())
-        except Exception:
-            continue
-
-        if n <= 0:
-            continue
-
-        if n in seen:
-            continue
-
-        seen.add(n)
-        out.append(n)
-
-    return out
-
-
-def fetch_sdot_yam_graph(param_ids):
+def fetch_sdot_yam_graph(param_ids, include_table_data=0):
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "*/*",
@@ -733,7 +703,7 @@ def fetch_sdot_yam_graph(param_ids):
     for param_id in param_ids:
         data.append(("paramIds[]", str(param_id)))
     data.append(("timeRange", "last_day"))
-    data.append(("includeTableData", "0"))
+    data.append(("includeTableData", str(include_table_data)))
 
     r = requests.post(SDOT_YAM_URL, headers=headers, data=data, timeout=20)
     r.raise_for_status()
@@ -745,36 +715,19 @@ def fetch_sdot_yam_graph(param_ids):
     return payload
 
 
-def discover_sdot_yam_param_ids():
-    # Не ломаем рабочее: оставляем твои paramId как базу
-    base = [
-        117409, 117413,  # Wind Direction + Wind Velocity
-        117387, 117390,  # Water Temperature + Salinity
-        117452, 117453,  # Current Velocity + Current Direction
-        117417,          # Hs Wave Height
-    ]
-
-    # Плюс пробуем типичные соседние paramId, чтобы захватить больше серий,
-    # но без изменения путей и без ломания уже работающего запроса
-    extra = list(range(117380, 117460))
-
-    return uniq_ints(base + extra)
-
-
 def fetch_sdot_yam_data():
-    param_ids = discover_sdot_yam_param_ids()
-    if not param_ids:
-        raise Exception("No buoy param IDs found")
+    request_groups = [
+        [117409, 117413],
+        [117413, 117417],
+        [117452, 117453],
+        [117387, 117390, 117417, 117418],
+    ]
 
     series_by_name = {}
     latest_ts = None
 
-    for group in chunked(param_ids, 8):
-        try:
-            payload = fetch_sdot_yam_graph(group)
-        except Exception as e:
-            print("Sdot Yam group fetch error:", group, e)
-            continue
+    for group in request_groups:
+        payload = fetch_sdot_yam_graph(group)
 
         for series in payload.get("graphData", []):
             name = str(series.get("name", "")).strip()
@@ -800,11 +753,12 @@ def fetch_sdot_yam_data():
             else:
                 prev_ts = prev.get("timestamp_ms")
                 new_ts = item.get("timestamp_ms")
-                if prev_ts is None and new_ts is not None:
+
+                if prev.get("value") is None and item.get("value") is not None:
+                    series_by_name[short_name] = item
+                elif prev_ts is None and new_ts is not None:
                     series_by_name[short_name] = item
                 elif prev_ts is not None and new_ts is not None and new_ts >= prev_ts:
-                    series_by_name[short_name] = item
-                elif prev.get("value") is None and item.get("value") is not None:
                     series_by_name[short_name] = item
 
             if ts is not None:
@@ -814,7 +768,6 @@ def fetch_sdot_yam_data():
     return {
         "series": series_by_name,
         "latest_ts": latest_ts,
-        "param_ids": param_ids,
     }
 
 
@@ -832,10 +785,10 @@ def find_series(series_by_name, *needles):
 
     valued = [x for x in candidates if x.get("value") is not None]
     if valued:
-        valued.sort(key=lambda x: (x.get("timestamp_ms") is not None, x.get("timestamp_ms") or 0), reverse=True)
+        valued.sort(key=lambda x: (x.get("timestamp_ms") or 0), reverse=True)
         return valued[0]
 
-    candidates.sort(key=lambda x: (x.get("timestamp_ms") is not None, x.get("timestamp_ms") or 0), reverse=True)
+    candidates.sort(key=lambda x: (x.get("timestamp_ms") or 0), reverse=True)
     return candidates[0]
 
 
@@ -844,12 +797,11 @@ def format_generic_series_line(item):
         return None
 
     value = item.get("value")
-    unit = item.get("unit") or ""
-    name = item.get("short_name") or item.get("full_name") or "Unknown"
-
     if value is None:
         return None
 
+    unit = item.get("unit") or ""
+    name = item.get("short_name") or item.get("full_name") or "Unknown"
     low = name.lower()
 
     if "direction" in low:
@@ -859,7 +811,7 @@ def format_generic_series_line(item):
         except Exception:
             return f"{name}: {value} {unit}".strip()
 
-    decimals = 2 if ("wave" in low or "height" in low) else 1
+    decimals = 2 if ("wave" in low or "height" in low or "period" in low) else 1
     return f"{name}: {format_value(value, decimals)} {unit}".strip()
 
 
@@ -872,6 +824,11 @@ def build_sdot_yam_message():
     wave_height = (
         find_series(series, "wave", "height")
         or find_series(series, "hs", "wave", "height")
+    )
+    wave_period = (
+        find_series(series, "wave", "period")
+        or find_series(series, "tp", "dpd")
+        or find_series(series, "period")
     )
     wind_velocity = (
         find_series(series, "wind", "velocity")
@@ -894,14 +851,21 @@ def build_sdot_yam_message():
     salinity = find_series(series, "salinity")
 
     used_names = set()
-    has_main_data = False
+    has_any = False
 
     if wave_height and wave_height.get("value") is not None:
         used_names.add(wave_height["short_name"])
         lines.append(
             f"Wave height: {format_value(wave_height['value'], 2)} {wave_height['unit']}"
         )
-        has_main_data = True
+        has_any = True
+
+    if wave_period and wave_period.get("value") is not None:
+        used_names.add(wave_period["short_name"])
+        lines.append(
+            f"Wave period: {format_value(wave_period['value'], 2)} {wave_period['unit']}"
+        )
+        has_any = True
 
     if (
         wind_velocity and wind_velocity.get("value") is not None and
@@ -914,13 +878,13 @@ def build_sdot_yam_message():
             f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']} "
             f"{deg_to_compass(wd)} ({int(round(wd))}°)"
         )
-        has_main_data = True
+        has_any = True
     elif wind_velocity and wind_velocity.get("value") is not None:
         used_names.add(wind_velocity["short_name"])
         lines.append(
             f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']}"
         )
-        has_main_data = True
+        has_any = True
 
     if (
         current_velocity and current_velocity.get("value") is not None and
@@ -933,27 +897,27 @@ def build_sdot_yam_message():
             f"Current 2m: {format_value(current_velocity['value'], 1)} {current_velocity['unit']} "
             f"{deg_to_compass(cd)} ({int(round(cd))}°)"
         )
-        has_main_data = True
+        has_any = True
     elif current_velocity and current_velocity.get("value") is not None:
         used_names.add(current_velocity["short_name"])
         lines.append(
             f"Current 2m: {format_value(current_velocity['value'], 1)} {current_velocity['unit']}"
         )
-        has_main_data = True
+        has_any = True
 
     if water_temperature and water_temperature.get("value") is not None:
         used_names.add(water_temperature["short_name"])
         lines.append(
             f"Water temperature: {format_value(water_temperature['value'], 1)} {water_temperature['unit']}"
         )
-        has_main_data = True
+        has_any = True
 
     if salinity and salinity.get("value") is not None:
         used_names.add(salinity["short_name"])
         lines.append(
             f"Salinity: {format_value(salinity['value'], 1)} {salinity['unit']}"
         )
-        has_main_data = True
+        has_any = True
 
     other_lines = []
     for name in sorted(series.keys(), key=lambda x: x.lower()):
@@ -973,7 +937,7 @@ def build_sdot_yam_message():
     if latest_ts:
         dt_utc = datetime.utcfromtimestamp(latest_ts / 1000.0)
         lines.append(f"Updated: {dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    elif not has_main_data and not other_lines:
+    elif not has_any and not other_lines:
         lines.append("No live numeric data found.")
 
     return "\n".join(lines)
