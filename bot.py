@@ -41,12 +41,16 @@ NAVAREA_BOX_LAT_MAX = 38.5
 NAVAREA_BOX_LON_MIN = 26.0
 NAVAREA_BOX_LON_MAX = 36.5
 
+# ---------------- SDOT YAM BUOY ----------------
+SDOT_YAM_BUTTON = "Sdot Yam buoy real time"
+SDOT_YAM_URL = "https://www.wqdatalive.com/public/v3/2281/graphdatamultiple"
+
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
 FORECAST_BUTTON = "Forecast Taurus, Delta, Crusade"
 
 WEATHER_BUTTONS = [
     "Acco weather",
-    "Haifa weather",
+    SDOT_YAM_BUTTON,
     "Herzliya weather",
     "Tel aviv weather",
     "Ashdod weather",
@@ -55,7 +59,8 @@ WEATHER_BUTTONS = [
 
 WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
-    ["Acco weather", "Haifa weather"],
+    ["Acco weather"],
+    [SDOT_YAM_BUTTON],
     ["Herzliya weather", "Tel aviv weather"],
     ["Ashdod weather", "Ashkelon weather"],
 ]
@@ -650,6 +655,153 @@ def get_metarea():
         return f"METAREA JSON error: {e}"
 
 
+# ---------------- SDOT YAM BUOY ----------------
+def get_last_valid_point(points):
+    for item in reversed(points or []):
+        try:
+            ts, value = item[0], item[1]
+        except Exception:
+            continue
+
+        if value is not None:
+            return ts, value
+
+    return None, None
+
+
+def deg_to_compass(deg):
+    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    return dirs[round(float(deg) / 22.5) % 16]
+
+
+def normalize_series_name(name):
+    prefix = "Sdot Yam 10m : "
+    if name.startswith(prefix):
+        return name[len(prefix):].strip()
+    return name.strip()
+
+
+def fetch_sdot_yam_data():
+    r = requests.get(SDOT_YAM_URL, timeout=20)
+    r.raise_for_status()
+    payload = r.json()
+
+    if payload.get("error"):
+        raise Exception("Buoy API returned error=true")
+
+    series_by_name = {}
+    latest_ts = None
+
+    for series in payload.get("graphData", []):
+        name = str(series.get("name", "")).strip()
+        short_name = normalize_series_name(name)
+        unit = str(series.get("unit", "")).strip()
+        ts, value = get_last_valid_point(series.get("data", []))
+
+        if not name or ts is None:
+            continue
+
+        series_by_name[short_name] = {
+            "full_name": name,
+            "short_name": short_name,
+            "unit": unit,
+            "param_id": series.get("paramId"),
+            "timestamp_ms": ts,
+            "value": value,
+        }
+
+        if latest_ts is None or ts > latest_ts:
+            latest_ts = ts
+
+    return {
+        "series": series_by_name,
+        "latest_ts": latest_ts,
+    }
+
+
+def format_value(value, decimals=1):
+    try:
+        return f"{float(value):.{decimals}f}"
+    except Exception:
+        return str(value)
+
+
+def build_sdot_yam_message():
+    data = fetch_sdot_yam_data()
+    series = data.get("series", {})
+
+    lines = ["Sdot Yam buoy real time"]
+
+    wind_velocity = series.get("Wind Velocity (knots)")
+    wind_direction = series.get("Wind Direction (Deg)")
+    water_temperature = series.get("Water Temperature (C)")
+    current_velocity = series.get("Current Velocity 2m (m/min)")
+    wave_height = series.get("Hs Wave Height (m)")
+    wave_period = series.get("Tp (DPD) Wave Period (sec)")
+    current_direction = series.get("Current Direction 2m (Deg)")
+
+    if wave_height:
+        lines.append(
+            f"Wave height: {format_value(wave_height['value'], 2)} {wave_height['unit']}"
+        )
+
+    if wave_period:
+        lines.append(
+            f"Wave period: {format_value(wave_period['value'], 1)} {wave_period['unit']}"
+        )
+
+    if wind_velocity and wind_direction:
+        wd = float(wind_direction["value"])
+        lines.append(
+            f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']} "
+            f"{deg_to_compass(wd)} ({int(round(wd))}°)"
+        )
+    elif wind_velocity:
+        lines.append(
+            f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']}"
+        )
+
+    if current_velocity and current_direction:
+        cd = float(current_direction["value"])
+        lines.append(
+            f"Current 2m: {format_value(current_velocity['value'], 1)} {current_velocity['unit']} "
+            f"{deg_to_compass(cd)} ({int(round(cd))}°)"
+        )
+    elif current_velocity:
+        lines.append(
+            f"Current 2m: {format_value(current_velocity['value'], 1)} {current_velocity['unit']}"
+        )
+
+    if water_temperature:
+        lines.append(
+            f"Water temperature: {format_value(water_temperature['value'], 1)} {water_temperature['unit']}"
+        )
+
+    shown = {
+        "Wind Velocity (knots)",
+        "Wind Direction (Deg)",
+        "Water Temperature (C)",
+        "Current Velocity 2m (m/min)",
+        "Hs Wave Height (m)",
+        "Tp (DPD) Wave Period (sec)",
+        "Current Direction 2m (Deg)",
+    }
+
+    extra_names = [name for name in series.keys() if name not in shown]
+    for name in sorted(extra_names):
+        item = series[name]
+        unit_part = f" {item['unit']}" if item["unit"] else ""
+        lines.append(f"{name}: {item['value']}{unit_part}")
+
+    latest_ts = data.get("latest_ts")
+    if latest_ts:
+        dt = datetime.utcfromtimestamp(latest_ts / 1000.0)
+        lines.append(f"Updated: {dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+    return "\n".join(lines)
+
+
 # ---------------- GMAIL ----------------
 def connect_gmail():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
@@ -944,7 +1096,7 @@ def process_navarea_entry(bot, chat_id, entry):
     return True
 
 
-# ---------------- WEATHER PLACEHOLDERS ----------------
+# ---------------- WEATHER / BUOY BUTTONS ----------------
 def build_weather_placeholder(station_name):
     return (
         f"{station_name}\n\n"
@@ -959,6 +1111,22 @@ def handle_weather_button(update, context):
     if text == FORECAST_BUTTON:
         msg = get_metarea()
         for i, chunk in enumerate(split_html_message(msg, limit=4000)):
+            if i == 0:
+                update.message.reply_text(
+                    chunk,
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                update.message.reply_text(chunk)
+        return
+
+    if text == SDOT_YAM_BUTTON:
+        try:
+            msg = build_sdot_yam_message()
+        except Exception as e:
+            msg = f"Sdot Yam buoy error: {e}"
+
+        for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
             if i == 0:
                 update.message.reply_text(
                     chunk,
