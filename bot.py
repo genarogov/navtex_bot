@@ -682,7 +682,7 @@ def normalize_series_name(name):
     return name.strip()
 
 
-def fetch_sdot_yam_graph(param_ids, include_table_data=0):
+def fetch_sdot_yam_graph(param_ids):
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "*/*",
@@ -696,7 +696,7 @@ def fetch_sdot_yam_graph(param_ids, include_table_data=0):
     for param_id in param_ids:
         data.append(("paramIds[]", str(param_id)))
     data.append(("timeRange", "last_day"))
-    data.append(("includeTableData", str(include_table_data)))
+    data.append(("includeTableData", "0"))
 
     r = requests.post(SDOT_YAM_URL, headers=headers, data=data, timeout=20)
     r.raise_for_status()
@@ -709,20 +709,17 @@ def fetch_sdot_yam_graph(param_ids, include_table_data=0):
 
 
 def fetch_sdot_yam_data():
-    payload_main = fetch_sdot_yam_graph(
-        [117387, 117390, 117409, 117413, 117417, 117418],
-        include_table_data=1
-    )
-
-    payload_current = fetch_sdot_yam_graph(
-        [117452, 117453],
-        include_table_data=0
-    )
+    payloads = [
+        fetch_sdot_yam_graph([117409, 117413]),  # Wind Direction + Wind Velocity
+        fetch_sdot_yam_graph([117387, 117390]),  # Water Temperature + Salinity
+        fetch_sdot_yam_graph([117452, 117453]),  # Current Velocity + Current Direction
+        fetch_sdot_yam_graph([117413, 117417]),  # Wind Velocity + Hs Wave Height
+    ]
 
     series_by_name = {}
     latest_ts = None
 
-    for payload in (payload_main, payload_current):
+    for payload in payloads:
         for series in payload.get("graphData", []):
             name = str(series.get("name", "")).strip()
             short_name = normalize_series_name(name)
@@ -770,16 +767,10 @@ def build_sdot_yam_message():
     current_velocity = series.get("Current Velocity 2m (m/min)")
     current_direction = series.get("Current Direction 2m (Deg)")
     wave_height = series.get("Hs Wave Height (m)")
-    wave_period = series.get("Tp (DPD) Wave Period (sec)")
 
     if wave_height:
         lines.append(
             f"Wave height: {format_value(wave_height['value'], 2)} {wave_height['unit']}"
-        )
-
-    if wave_period:
-        lines.append(
-            f"Wave period: {format_value(wave_period['value'], 1)} {wave_period['unit']}"
         )
 
     if wind_velocity and wind_direction:
@@ -814,27 +805,10 @@ def build_sdot_yam_message():
             f"Salinity: {format_value(salinity['value'], 1)} {salinity['unit']}"
         )
 
-    shown = {
-        "Wind Velocity (knots)",
-        "Wind Direction (Deg)",
-        "Water Temperature (C)",
-        "Salinity (PPT)",
-        "Current Velocity 2m (m/min)",
-        "Current Direction 2m (Deg)",
-        "Hs Wave Height (m)",
-        "Tp (DPD) Wave Period (sec)",
-    }
-
-    extra_names = [name for name in series.keys() if name not in shown]
-    for name in sorted(extra_names):
-        item = series[name]
-        unit_part = f" {item['unit']}" if item["unit"] else ""
-        lines.append(f"{name}: {item['value']}{unit_part}")
-
     latest_ts = data.get("latest_ts")
     if latest_ts:
-        dt = datetime.utcfromtimestamp(latest_ts / 1000.0)
-        lines.append(f"Updated: {dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        dt_utc = datetime.utcfromtimestamp(latest_ts / 1000.0)
+        lines.append(f"Updated: {dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
     return "\n".join(lines)
 
