@@ -46,9 +46,16 @@ NAVAREA_BOX_LON_MAX = 36.5
 SDOT_YAM_BUTTON = "Sdot Yam buoy real time"
 SDOT_YAM_URL = "https://www.wqdatalive.com/public/v3/2281/graphdatamultiple"
 
-# ---------------- SHIKOMA / ISRAMAR ----------------
-SHIKOMA_BUTTON = "Shikoma buoy real time"
-SHIKOMA_WAVES_URL = "https://isramar.ocean.org.il/isramar2009/station/data/ShikBuoy_HS_Per.json"
+# ---------------- CAMERI BUOYS ----------------
+HAIFA_BUOY_BUTTON = "Haifa buoy real time"
+ASHDOD_BUOY_BUTTON = "Ashdod buoy real time"
+
+CAMERI_QUERY_URL = "https://adva.cameri-eng.com/api/ds/query"
+CAMERI_DATASOURCE_UID = "d4fb9d12-3057-41b7-9ce2-36c7320d8a58"
+CAMERI_BUOY_LOCATIONS = {
+    HAIFA_BUOY_BUTTON: {"name": "Haifa buoy", "location_id": 1},
+    ASHDOD_BUOY_BUTTON: {"name": "Ashdod buoy", "location_id": 2},
+}
 
 # ---------------- IMS WEATHER ----------------
 IMS_XML_URL = "https://ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml"
@@ -75,8 +82,9 @@ IMS_PRESSURE_STATIONS = {
 FORECAST_BUTTON = "Forecast Taurus, Delta, Crusade"
 
 WEATHER_BUTTONS = [
-    SHIKOMA_BUTTON,
     SDOT_YAM_BUTTON,
+    HAIFA_BUOY_BUTTON,
+    ASHDOD_BUOY_BUTTON,
     "Haifa Technion weather",
     "En Karmel weather",
     "Hadera Port weather",
@@ -87,8 +95,9 @@ WEATHER_BUTTONS = [
 
 WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
-    [SHIKOMA_BUTTON],
     [SDOT_YAM_BUTTON],
+    [HAIFA_BUOY_BUTTON],
+    [ASHDOD_BUOY_BUTTON],
     ["Haifa Technion weather", "En Karmel weather"],
     ["Hadera Port weather", "Tel Aviv Coast weather"],
     ["Ashdod Port weather", "Ashqelon Port weather"],
@@ -267,6 +276,13 @@ def format_direction_with_degrees(deg_value):
         deg_float = float(deg_value)
         deg_int = int(round(deg_float))
         return f"{deg_to_compass(deg_float)} ({deg_int}°)"
+    except Exception:
+        return "N/A"
+
+
+def format_float(value, decimals=1):
+    try:
+        return f"{float(value):.{decimals}f}"
     except Exception:
         return "N/A"
 
@@ -774,13 +790,6 @@ def normalize_series_name(name):
     return name.strip()
 
 
-def format_value(value, decimals=1):
-    try:
-        return f"{float(value):.{decimals}f}"
-    except Exception:
-        return str(value)
-
-
 def fetch_sdot_yam_graph(param_ids, include_table_data=0):
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -919,12 +928,12 @@ def build_sdot_yam_message():
     ):
         wd = float(wind_direction["value"])
         lines.append(
-            f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']} "
+            f"Wind: {format_float(wind_velocity['value'], 1)} {wind_velocity['unit']} "
             f"{deg_to_compass(wd)} ({int(round(wd))}°)"
         )
     elif wind_velocity and wind_velocity.get("value") is not None:
         lines.append(
-            f"Wind: {format_value(wind_velocity['value'], 1)} {wind_velocity['unit']}"
+            f"Wind: {format_float(wind_velocity['value'], 1)} {wind_velocity['unit']}"
         )
     else:
         lines.append("Wind: N/A")
@@ -935,91 +944,125 @@ def build_sdot_yam_message():
         if current_direction and current_direction.get("value") is not None:
             cd = float(current_direction["value"])
             lines.append(
-                f"Current 2m: {format_value(current_knots, 1)} knots "
+                f"Current 2m: {format_float(current_knots, 1)} knots "
                 f"{deg_to_compass(cd)} ({int(round(cd))}°)"
             )
         else:
-            lines.append(f"Current 2m: {format_value(current_knots, 1)} knots")
+            lines.append(f"Current 2m: {format_float(current_knots, 1)} knots")
     else:
         lines.append("Current 2m: N/A")
 
     return "\n".join(lines)
 
 
-# ---------------- SHIKOMA / ISRAMAR ----------------
-def fetch_json(url):
+# ---------------- CAMERI BUOYS ----------------
+def fetch_cameri_buoy_latest(location_id):
+    now_ms = int(time.time() * 1000)
+    from_ms = now_ms - (3 * 24 * 60 * 60 * 1000)
+
+    payload = {
+        "queries": [{
+            "refId": "A",
+            "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": CAMERI_DATASOURCE_UID
+            },
+            "rawSql": (
+                "SELECT\n"
+                "  middle_time AS \"time\",\n"
+                "  avg_hs AS \"Wave Height (m)\",\n"
+                "  avg_tp AS \"Peak Period (s)\",\n"
+                "  avg_temp AS \"Temperature (°C)\"\n"
+                "FROM\n"
+                "  backend_buoysmsr_2h_avg\n"
+                f"WHERE\n  location_id = '{int(location_id)}'\n"
+                "  AND $__timeFilter(middle_time)\n"
+                "ORDER BY\n"
+                "  middle_time DESC\n"
+                "LIMIT 1;\n"
+            ),
+            "format": "table",
+            "datasourceId": 10,
+            "intervalMs": 120000,
+            "maxDataPoints": 510,
+        }],
+        "from": str(from_ms),
+        "to": str(now_ms),
+    }
+
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json,text/plain,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "https://adva.cameri-eng.com",
+        "Referer": "https://adva.cameri-eng.com/",
     }
-    r = requests.get(url, headers=headers, timeout=20)
+
+    r = requests.post(CAMERI_QUERY_URL, headers=headers, json=payload, timeout=25)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
 
+    frames = (((data or {}).get("results") or {}).get("A") or {}).get("frames") or []
+    if not frames:
+        return None
 
-def build_shikoma_message():
-    try:
-        payload = fetch_json(SHIKOMA_WAVES_URL)
-    except Exception as e:
-        return f"Shikoma buoy error: {e}"
+    frame = frames[0]
+    fields = [f.get("name") for f in frame.get("schema", {}).get("fields", [])]
+    values = frame.get("data", {}).get("values", [])
 
-    dt_raw = str(payload.get("datetime") or "").strip()
-    params = payload.get("parameters") or []
+    if not fields or not values:
+        return None
 
-    hs = None
-    tp = None
-    hmax = None
+    columns = {}
+    for idx, field_name in enumerate(fields):
+        column_values = values[idx] if idx < len(values) else []
+        columns[field_name] = column_values
 
-    for p in params:
-        name = str(p.get("name") or "").strip().lower()
-        units = str(p.get("units") or "").strip()
-        values = p.get("values") or []
+    if not columns.get("time"):
+        return None
 
-        value = None
-        if isinstance(values, list) and values:
-            value = values[0]
+    time_value = columns["time"][0] if columns["time"] else None
+    hs_value = columns.get("Wave Height (m)", [None])[0]
+    tp_value = columns.get("Peak Period (s)", [None])[0]
+    temp_value = columns.get("Temperature (°C)", [None])[0]
 
-        if "significant wave height" in name:
-            hs = (value, units)
-        elif "peak wave period" in name:
-            tp = (value, units)
-        elif "maximal wave height" in name:
-            hmax = (value, units)
-
-    lines = ["📍 Shikoma buoy"]
-
-    dt_out = "N/A"
-    if dt_raw:
+    dt_utc = None
+    if isinstance(time_value, (int, float)):
+        dt_utc = datetime.fromtimestamp(time_value / 1000.0, tz=timezone.utc).replace(tzinfo=None)
+    elif isinstance(time_value, str):
         try:
-            dt_obj = datetime.fromisoformat(dt_raw.replace("Z", "+00:00"))
-            if dt_obj.tzinfo is not None:
-                dt_obj = dt_obj.astimezone(timezone.utc).replace(tzinfo=None)
-            dt_out = format_navstyle_datetime(dt_obj)
+            dt_utc = datetime.fromisoformat(time_value.replace("Z", "+00:00"))
+            if dt_utc.tzinfo is not None:
+                dt_utc = dt_utc.astimezone(timezone.utc).replace(tzinfo=None)
         except Exception:
-            dt_out = dt_raw
+            dt_utc = None
 
-    lines.append(f"Updated: {dt_out}")
-    lines.append("")
+    return {
+        "time": dt_utc,
+        "hs": hs_value,
+        "tp": tp_value,
+        "temp": temp_value,
+    }
 
-    if hs and hs[0] is not None:
-        lines.append(f"Significant wave height: {float(hs[0]):.2f} {hs[1]}")
-    else:
-        lines.append("Significant wave height: N/A")
 
-    if tp and tp[0] is not None:
-        lines.append(f"Peak wave period: {float(tp[0]):.1f} {tp[1]}")
-    else:
-        lines.append("Peak wave period: N/A")
+def build_cameri_buoy_message(button_text):
+    config = CAMERI_BUOY_LOCATIONS.get(button_text)
+    if not config:
+        return "Buoy config not found."
 
-    if hmax and hmax[0] is not None:
-        lines.append(f"Maximal wave height: {float(hmax[0]):.2f} {hmax[1]}")
-    else:
-        lines.append("Maximal wave height: N/A")
+    latest = fetch_cameri_buoy_latest(config["location_id"])
+    if not latest:
+        return f"📍 {config['name']}\nNo data."
 
-    return "\n".join(lines)
+    updated = format_navstyle_datetime(latest["time"]) if latest.get("time") else "N/A"
+
+    return (
+        f"📍 {config['name']}\n"
+        f"Updated: {updated}\n\n"
+        f"Wave height: {format_float(latest.get('hs'), 2)} m\n"
+        f"Peak period: {format_float(latest.get('tp'), 1)} s\n"
+        f"Water temperature: {format_float(latest.get('temp'), 1)} °C"
+    )
 
 
 # ---------------- IMS WEATHER ----------------
@@ -1481,11 +1524,11 @@ def handle_weather_button(update, context):
                 update.message.reply_text(chunk)
         return
 
-    if text == SHIKOMA_BUTTON:
+    if text in CAMERI_BUOY_LOCATIONS:
         try:
-            msg = build_shikoma_message()
+            msg = build_cameri_buoy_message(text)
         except Exception as e:
-            msg = f"Shikoma buoy error: {e}"
+            msg = f"CAMERI buoy error: {e}"
 
         for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
             if i == 0:
