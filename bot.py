@@ -682,27 +682,21 @@ def normalize_series_name(name):
     return name.strip()
 
 
-def fetch_sdot_yam_data():
+def fetch_sdot_yam_graph(param_ids, include_table_data=0):
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "*/*",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "Origin": "https://www.wqdatalive.com",
-        "Referer": "https://www.wqdatalive.com/public/v3/2281",
+        "Referer": "https://www.wqdatalive.com/public/v3/2281?dashboardId=371&panels%5B0%5D%5Bid%5D=6076&panels%5B0%5D%5Btab%5D=data",
         "X-Requested-With": "XMLHttpRequest",
     }
 
-    data = [
-        ("paramIds[]", "117413"),  # Wind Velocity
-        ("paramIds[]", "117417"),  # Wave Height
-        ("paramIds[]", "117414"),  # Wind Direction
-        ("paramIds[]", "117415"),  # Water Temperature
-        ("paramIds[]", "117416"),  # Current Velocity
-        ("paramIds[]", "117418"),  # Wave Period
-        ("paramIds[]", "117419"),  # Current Direction
-        ("timeRange", "last_day"),
-        ("includeTableData", "0"),
-    ]
+    data = []
+    for param_id in param_ids:
+        data.append(("paramIds[]", str(param_id)))
+    data.append(("timeRange", "last_day"))
+    data.append(("includeTableData", str(include_table_data)))
 
     r = requests.post(SDOT_YAM_URL, headers=headers, data=data, timeout=20)
     r.raise_for_status()
@@ -711,26 +705,44 @@ def fetch_sdot_yam_data():
     if payload.get("error"):
         raise Exception("Buoy API returned error=true")
 
+    return payload
+
+
+def fetch_sdot_yam_data():
+    payload_main = fetch_sdot_yam_graph(
+        [117387, 117390, 117409, 117413, 117417, 117418],
+        include_table_data=1
+    )
+
+    payload_current = fetch_sdot_yam_graph(
+        [117452, 117453],
+        include_table_data=0
+    )
+
     series_by_name = {}
     latest_ts = None
 
-    for series in payload.get("graphData", []):
-        name = str(series.get("name", "")).strip()
-        short_name = normalize_series_name(name)
-        unit = str(series.get("unit", "")).strip()
-        ts, value = get_last_valid_point(series.get("data", []))
+    for payload in (payload_main, payload_current):
+        for series in payload.get("graphData", []):
+            name = str(series.get("name", "")).strip()
+            short_name = normalize_series_name(name)
+            unit = str(series.get("unit", "")).strip()
+            ts, value = get_last_valid_point(series.get("data", []))
 
-        if not name or ts is None:
-            continue
+            if not name or ts is None:
+                continue
 
-        series_by_name[short_name] = {
-            "unit": unit,
-            "timestamp_ms": ts,
-            "value": value,
-        }
+            series_by_name[short_name] = {
+                "full_name": name,
+                "short_name": short_name,
+                "unit": unit,
+                "param_id": series.get("paramId"),
+                "timestamp_ms": ts,
+                "value": value,
+            }
 
-        if latest_ts is None or ts > latest_ts:
-            latest_ts = ts
+            if latest_ts is None or ts > latest_ts:
+                latest_ts = ts
 
     return {
         "series": series_by_name,
@@ -754,10 +766,11 @@ def build_sdot_yam_message():
     wind_velocity = series.get("Wind Velocity (knots)")
     wind_direction = series.get("Wind Direction (Deg)")
     water_temperature = series.get("Water Temperature (C)")
+    salinity = series.get("Salinity (PPT)")
     current_velocity = series.get("Current Velocity 2m (m/min)")
+    current_direction = series.get("Current Direction 2m (Deg)")
     wave_height = series.get("Hs Wave Height (m)")
     wave_period = series.get("Tp (DPD) Wave Period (sec)")
-    current_direction = series.get("Current Direction 2m (Deg)")
 
     if wave_height:
         lines.append(
@@ -796,14 +809,20 @@ def build_sdot_yam_message():
             f"Water temperature: {format_value(water_temperature['value'], 1)} {water_temperature['unit']}"
         )
 
+    if salinity:
+        lines.append(
+            f"Salinity: {format_value(salinity['value'], 1)} {salinity['unit']}"
+        )
+
     shown = {
         "Wind Velocity (knots)",
         "Wind Direction (Deg)",
         "Water Temperature (C)",
+        "Salinity (PPT)",
         "Current Velocity 2m (m/min)",
+        "Current Direction 2m (Deg)",
         "Hs Wave Height (m)",
         "Tp (DPD) Wave Period (sec)",
-        "Current Direction 2m (Deg)",
     }
 
     extra_names = [name for name in series.keys() if name not in shown]
