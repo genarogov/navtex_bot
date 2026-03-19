@@ -8,11 +8,11 @@ import tempfile
 import threading
 import html
 from io import BytesIO
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from email.header import decode_header
+from zoneinfo import ZoneInfo
 
 import requests
-import xml.etree.ElementTree as ET
 from telegram import ReplyKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from docx import Document
@@ -22,6 +22,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
+IMS_API_TOKEN = os.getenv("IMS_API_TOKEN", "").strip()
 
 # ---------------- CACHE ----------------
 CACHE_FILE = "cache.json"
@@ -58,7 +59,14 @@ CAMERI_BUOY_LOCATIONS = {
 }
 
 # ---------------- IMS WEATHER ----------------
-IMS_XML_URL = "https://ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml"
+IMS_API_BASE = "https://api.ims.gov.il/v1/Envista"
+IMS_STATION_CACHE_TTL = 6 * 60 * 60
+IMS_STATION_INFO_CACHE = {}
+IMS_STATIONS_CACHE = {
+    "fetched_at": 0,
+    "stations": [],
+}
+ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 IMS_STATIONS = {
     "Haifa Technion weather": "HAIFA TECHNION",
@@ -76,6 +84,38 @@ IMS_PRESSURE_STATIONS = {
     "TEL AVIV COAST": "BET DAGAN",
     "ASHDOD PORT": "BET DAGAN",
     "ASHQELON PORT": "BET DAGAN",
+}
+
+IMS_CHANNEL_ALIASES = {
+    "TD": [
+        "TD", "TEMP", "TEMPERATURE", "AIR TEMPERATURE", "DRY TEMPERATURE",
+        "DRY BULB", "DRYBULB", "TA"
+    ],
+    "RH": [
+        "RH", "HUMIDITY", "RELATIVE HUMIDITY", "RELATIVEHUMIDITY"
+    ],
+    "BP": [
+        "BP", "PRESSURE", "BAROMETRIC PRESSURE", "STATION PRESSURE",
+        "SEA LEVEL PRESSURE", "BAROMETER"
+    ],
+    "Rain": [
+        "RAIN", "RAINFALL", "PRECIPITATION", "RR"
+    ],
+    "WS": [
+        "WS", "WIND SPEED", "WINDSPEED", "WIND VELOCITY", "WINDVELOCITY",
+        "FF", "VELOCITY"
+    ],
+    "WD": [
+        "WD", "WIND DIRECTION", "WINDDIRECTION", "DD", "DIRECTION"
+    ],
+    "WSmax": [
+        "WSMAX", "MAX WIND SPEED", "MAXWINDSPEED", "MAX GUST", "GUST",
+        "WIND GUST", "WINDGUST", "WG", "MAX VELOCITY"
+    ],
+    "WDmax": [
+        "WDMAX", "MAX WIND DIRECTION", "MAXWINDDIRECTION",
+        "GUST DIRECTION", "DIRECTION OF MAX GUST"
+    ],
 }
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
@@ -268,6 +308,12 @@ def format_navstyle_datetime(dt):
     return dt.strftime("%d %B %Y / %H%M UTC").upper()
 
 
+def format_israel_datetime(dt):
+    if not dt:
+        return "N/A"
+    return dt.strftime("%d %B %Y / %H%M ISR").upper()
+
+
 def format_direction_with_degrees(deg_value):
     if deg_value in (None, "", "N/A"):
         return "N/A"
@@ -285,6 +331,26 @@ def format_float(value, decimals=1):
         return f"{float(value):.{decimals}f}"
     except Exception:
         return "N/A"
+
+
+def normalize_key(text):
+    return re.sub(r"[^A-Z0-9]+", "", str(text or "").upper())
+
+
+def first_not_none(*values):
+    for value in values:
+        if value not in (None, "", []):
+            return value
+    return None
+
+
+def safe_float(value):
+    if value in (None, "", "N/A"):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 # ---------------- COORDINATES ----------------
@@ -1066,119 +1132,446 @@ def build_cameri_buoy_message(button_text):
 
 
 # ---------------- IMS WEATHER ----------------
-def safe_xml_text(node, tag):
-    el = node.find(tag)
-    if el is None or el.text is None:
-        return None
-    text = el.text.strip()
-    return text if text else None
-
-
-def fetch_ims_observations():
-    headers = {
+def ims_headers():
+    if not IMS_API_TOKEN:
+        raise Exception("IMS_API_TOKEN is empty")
+    return {
+        "Authorization": f"ApiToken {IMS_API_TOKEN}",
         "User-Agent": "Mozilla/5.0",
-        "Accept": "application/xml,text/xml,*/*",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
+        "Accept": "application/json",
     }
-    r = requests.get(IMS_XML_URL, headers=headers, timeout=20)
+
+
+def ims_request_json(path):
+    url = f"{IMS_API_BASE}{path}"
+    r = requests.get(url, headers=ims_headers(), timeout=30)
     r.raise_for_status()
-
-    root = ET.fromstring(r.content)
-    observations = []
-
-    for obs in root.findall("Observation"):
-        observations.append({
-            "stn_name": safe_xml_text(obs, "stn_name"),
-            "stn_num": safe_xml_text(obs, "stn_num"),
-            "time_obs": safe_xml_text(obs, "time_obs"),
-            "TD": safe_xml_text(obs, "TD"),
-            "RH": safe_xml_text(obs, "RH"),
-            "BP": safe_xml_text(obs, "BP"),
-            "Rain": safe_xml_text(obs, "Rain"),
-            "WS": safe_xml_text(obs, "WS"),
-            "WD": safe_xml_text(obs, "WD"),
-            "WSmax": safe_xml_text(obs, "WSmax"),
-            "WDmax": safe_xml_text(obs, "WDmax"),
-        })
-
-    return observations
+    return r.json()
 
 
-def get_latest_observation_for_station(observations, station_name):
-    latest_obs = None
-    latest_dt = None
-    wanted = (station_name or "").strip().upper()
+def ims_extract_station_id(station):
+    return first_not_none(
+        station.get("stationId"),
+        station.get("station_id"),
+        station.get("id"),
+        station.get("StationId"),
+        station.get("StationID"),
+    )
 
-    for obs in observations:
-        current_name = (obs.get("stn_name") or "").strip().upper()
-        if current_name != wanted:
-            continue
 
-        time_obs = obs.get("time_obs")
-        if not time_obs:
-            continue
+def ims_extract_station_name(station):
+    return str(first_not_none(
+        station.get("name"),
+        station.get("stationName"),
+        station.get("station_name"),
+        station.get("title"),
+        station.get("label"),
+    ) or "").strip()
 
+
+def parse_datetime_any(value):
+    if not value:
+        return None
+
+    if isinstance(value, (int, float)):
         try:
-            dt = datetime.fromisoformat(time_obs)
+            if value > 10**12:
+                return datetime.utcfromtimestamp(value / 1000.0)
+            return datetime.utcfromtimestamp(value)
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    text = text.replace("Z", "+00:00")
+
+    try:
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        pass
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
         except Exception:
             continue
 
-        if latest_dt is None or dt > latest_dt:
-            latest_dt = dt
-            latest_obs = obs
-
-    return latest_obs
+    return None
 
 
-def get_latest_pressure_for_station(observations, pressure_station_name):
-    latest_obs = None
-    latest_dt = None
-    wanted = (pressure_station_name or "").strip().upper()
+def normalize_station_lookup_name(name):
+    return re.sub(r"\s+", " ", str(name or "").upper()).strip()
 
-    for obs in observations:
-        current_name = (obs.get("stn_name") or "").strip().upper()
-        if current_name != wanted:
+
+def fetch_ims_stations():
+    now = time.time()
+    if IMS_STATIONS_CACHE["stations"] and now - IMS_STATIONS_CACHE["fetched_at"] < IMS_STATION_CACHE_TTL:
+        return IMS_STATIONS_CACHE["stations"]
+
+    stations = ims_request_json("/stations")
+    if not isinstance(stations, list):
+        raise Exception("IMS stations response is not a list")
+
+    IMS_STATIONS_CACHE["stations"] = stations
+    IMS_STATIONS_CACHE["fetched_at"] = now
+    return stations
+
+
+def find_ims_station_by_name(target_name):
+    wanted = normalize_station_lookup_name(target_name)
+    stations = fetch_ims_stations()
+
+    exact = []
+    partial = []
+
+    for station in stations:
+        st_name = ims_extract_station_name(station)
+        st_norm = normalize_station_lookup_name(st_name)
+        if not st_norm:
             continue
 
-        if not obs.get("BP"):
+        if st_norm == wanted:
+            exact.append(station)
+        elif wanted in st_norm or st_norm in wanted:
+            partial.append(station)
+
+    if exact:
+        return exact[0]
+    if partial:
+        return partial[0]
+
+    raise Exception(f"IMS station not found: {target_name}")
+
+
+def fetch_ims_station_info(station_name):
+    cache_key = normalize_station_lookup_name(station_name)
+    cached = IMS_STATION_INFO_CACHE.get(cache_key)
+    now = time.time()
+
+    if cached and now - cached["fetched_at"] < IMS_STATION_CACHE_TTL:
+        return cached["data"]
+
+    station = find_ims_station_by_name(station_name)
+    station_id = ims_extract_station_id(station)
+    if station_id is None:
+        raise Exception(f"IMS station id not found for: {station_name}")
+
+    station_meta = ims_request_json(f"/stations/{station_id}")
+    latest_data = ims_request_json(f"/stations/{station_id}/data/latest")
+
+    data = {
+        "station": station,
+        "station_id": station_id,
+        "station_meta": station_meta,
+        "latest_data": latest_data,
+    }
+    IMS_STATION_INFO_CACHE[cache_key] = {
+        "fetched_at": now,
+        "data": data,
+    }
+    return data
+
+
+def recursive_find_first_datetime(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            low = str(key).lower()
+            if "time" in low or "date" in low:
+                dt = parse_datetime_any(value)
+                if dt:
+                    return dt
+        for value in node.values():
+            dt = recursive_find_first_datetime(value)
+            if dt:
+                return dt
+
+    elif isinstance(node, list):
+        for item in node:
+            dt = recursive_find_first_datetime(item)
+            if dt:
+                return dt
+
+    return None
+
+
+def collect_monitor_name_map(station_meta):
+    result = {}
+
+    def add_names(channel_id, *names):
+        if channel_id in (None, "", "N/A"):
+            return
+        cid = str(channel_id).strip()
+        if not cid:
+            return
+        bucket = result.setdefault(cid, set())
+        for name in names:
+            name = str(name or "").strip()
+            if name:
+                bucket.add(name)
+
+    monitors = []
+    if isinstance(station_meta, dict):
+        monitors = first_not_none(
+            station_meta.get("monitors"),
+            station_meta.get("Monitors"),
+            station_meta.get("channels"),
+            station_meta.get("Channels"),
+        ) or []
+
+    if not isinstance(monitors, list):
+        monitors = []
+
+    for mon in monitors:
+        if not isinstance(mon, dict):
             continue
 
-        time_obs = obs.get("time_obs")
-        if not time_obs:
-            continue
+        channel_id = first_not_none(
+            mon.get("channelId"),
+            mon.get("channel_id"),
+            mon.get("id"),
+            mon.get("monitorId"),
+        )
 
-        try:
-            dt = datetime.fromisoformat(time_obs)
-        except Exception:
-            continue
+        add_names(
+            channel_id,
+            mon.get("name"),
+            mon.get("alias"),
+            mon.get("description"),
+            mon.get("shortName"),
+            mon.get("title"),
+            mon.get("symbol"),
+        )
+    return result
 
-        if latest_dt is None or dt > latest_dt:
-            latest_dt = dt
-            latest_obs = obs
 
-    return latest_obs
+def collect_latest_channel_items(node):
+    items = []
+
+    def walk(obj):
+        if isinstance(obj, list):
+            for item in obj:
+                walk(item)
+            return
+
+        if not isinstance(obj, dict):
+            return
+
+        has_channel_hint = any(
+            key in obj for key in (
+                "channelId", "channel_id", "monitorId", "id", "name", "alias",
+                "description", "symbol", "title"
+            )
+        )
+        has_value_hint = any(
+            key in obj for key in (
+                "value", "Value", "lastValue", "currentValue", "avg", "data"
+            )
+        )
+
+        if has_channel_hint and has_value_hint:
+            items.append(obj)
+
+        for value in obj.values():
+            if isinstance(value, (dict, list)):
+                walk(value)
+
+    walk(node)
+    return items
+
+
+def extract_value_from_item(item):
+    value = first_not_none(
+        item.get("value"),
+        item.get("Value"),
+        item.get("lastValue"),
+        item.get("currentValue"),
+        item.get("avg"),
+    )
+
+    if isinstance(value, dict):
+        value = first_not_none(
+            value.get("value"),
+            value.get("Value"),
+            value.get("avg"),
+            value.get("data"),
+        )
+
+    if isinstance(value, list):
+        for v in reversed(value):
+            if v not in (None, ""):
+                return v
+        return None
+
+    return value
+
+
+def extract_item_datetime(item):
+    return first_not_none(
+        parse_datetime_any(item.get("datetime")),
+        parse_datetime_any(item.get("dateTime")),
+        parse_datetime_any(item.get("time")),
+        parse_datetime_any(item.get("Time")),
+        parse_datetime_any(item.get("lastUpdate")),
+        parse_datetime_any(item.get("updatedAt")),
+        parse_datetime_any(item.get("createdAt")),
+    )
+
+
+def build_channel_value_map(station_meta, latest_data):
+    name_map = collect_monitor_name_map(station_meta)
+    items = collect_latest_channel_items(latest_data)
+    channel_map = {}
+
+    for item in items:
+        channel_id = str(first_not_none(
+            item.get("channelId"),
+            item.get("channel_id"),
+            item.get("monitorId"),
+            item.get("id"),
+        ) or "").strip()
+
+        names = set()
+        if channel_id and channel_id in name_map:
+            names.update(name_map[channel_id])
+
+        for key in ("name", "alias", "description", "symbol", "title", "shortName"):
+            val = item.get(key)
+            if val:
+                names.add(str(val).strip())
+
+        value = extract_value_from_item(item)
+        item_dt = extract_item_datetime(item)
+
+        entry = {
+            "channel_id": channel_id,
+            "names": list(names),
+            "value": value,
+            "datetime": item_dt,
+        }
+
+        keys = set()
+        for name in names:
+            keys.add(normalize_key(name))
+
+        if channel_id:
+            keys.add(normalize_key(channel_id))
+
+        for key in keys:
+            if not key:
+                continue
+
+            prev = channel_map.get(key)
+            if prev is None:
+                channel_map[key] = entry
+                continue
+
+            prev_dt = prev.get("datetime")
+            new_dt = entry.get("datetime")
+
+            if prev.get("value") in (None, "") and entry.get("value") not in (None, ""):
+                channel_map[key] = entry
+            elif prev_dt is None and new_dt is not None:
+                channel_map[key] = entry
+            elif prev_dt is not None and new_dt is not None and new_dt >= prev_dt:
+                channel_map[key] = entry
+
+    return channel_map
+
+
+def find_channel_entry(channel_map, canonical_name):
+    aliases = IMS_CHANNEL_ALIASES.get(canonical_name, [])
+    for alias in aliases:
+        entry = channel_map.get(normalize_key(alias))
+        if entry is not None:
+            return entry
+    return None
+
+
+def ims_api_time_to_utc(dt_naive):
+    """
+    IMS docs: API time is in local standard time (winter time) all year.
+    So base conversion to UTC is always minus 2 hours.
+    """
+    if not dt_naive:
+        return None
+    return dt_naive - timedelta(hours=2)
+
+
+def utc_to_israel_local(dt_utc):
+    if not dt_utc:
+        return None
+    return dt_utc.replace(tzinfo=timezone.utc).astimezone(ISRAEL_TZ)
+
+
+def get_ims_station_weather(station_name):
+    info = fetch_ims_station_info(station_name)
+    station_meta = info["station_meta"]
+    latest_data = info["latest_data"]
+
+    channel_map = build_channel_value_map(station_meta, latest_data)
+
+    obs = {
+        "TD": None,
+        "RH": None,
+        "BP": None,
+        "Rain": None,
+        "WS": None,
+        "WD": None,
+        "WSmax": None,
+        "WDmax": None,
+        "time_obs": None,
+    }
+
+    for key in ("TD", "RH", "BP", "Rain", "WS", "WD", "WSmax", "WDmax"):
+        entry = find_channel_entry(channel_map, key)
+        if entry:
+            obs[key] = entry.get("value")
+            if obs["time_obs"] is None and entry.get("datetime") is not None:
+                obs["time_obs"] = entry.get("datetime")
+
+    if obs["time_obs"] is None:
+        obs["time_obs"] = recursive_find_first_datetime(latest_data)
+
+    obs["station_name"] = station_name
+    obs["station_id"] = info["station_id"]
+    return obs
 
 
 def build_ims_weather_message(station_name):
-    observations = fetch_ims_observations()
-    obs = get_latest_observation_for_station(observations, station_name)
+    obs = get_ims_station_weather(station_name)
 
-    if not obs:
-        return f"📍 {station_name}\nNo data."
+    dt = obs.get("time_obs")
+    updated_utc = ims_api_time_to_utc(dt) if dt else None
+    updated_israel = utc_to_israel_local(updated_utc) if updated_utc else None
 
-    try:
-        dt = datetime.fromisoformat(obs.get("time_obs"))
-        updated = format_navstyle_datetime(dt)
-    except Exception:
+    if updated_utc and updated_israel:
+        updated = f"{format_navstyle_datetime(updated_utc)} / {format_israel_datetime(updated_israel)}"
+    elif updated_utc:
+        updated = format_navstyle_datetime(updated_utc)
+    else:
         updated = "N/A"
 
     pressure_value = obs.get("BP")
-    pressure_station_name = IMS_PRESSURE_STATIONS.get((station_name or "").strip().upper())
+    pressure_station_name = IMS_PRESSURE_STATIONS.get(normalize_station_lookup_name(station_name))
     if pressure_station_name:
-        pressure_obs = get_latest_pressure_for_station(observations, pressure_station_name)
-        if pressure_obs and pressure_obs.get("BP"):
-            pressure_value = pressure_obs.get("BP")
+        try:
+            pressure_obs = get_ims_station_weather(pressure_station_name)
+            if pressure_obs and pressure_obs.get("BP") not in (None, ""):
+                pressure_value = pressure_obs.get("BP")
+        except Exception as e:
+            print("IMS pressure fallback error:", e)
 
     wind_kn = ms_to_knots(obs.get("WS"))
     gust_kn = ms_to_knots(obs.get("WSmax"))
@@ -1186,13 +1579,36 @@ def build_ims_weather_message(station_name):
     wind_str = f"{wind_kn:.1f} kn, {format_direction_with_degrees(obs.get('WD'))}" if wind_kn is not None else "N/A"
     gust_str = f"{gust_kn:.1f} kn, {format_direction_with_degrees(obs.get('WDmax'))}" if gust_kn is not None else "N/A"
 
+    pressure_text = "N/A"
+    if pressure_value not in (None, ""):
+        pressure_num = safe_float(pressure_value)
+        if pressure_num is None:
+            pressure_text = str(pressure_value)
+        else:
+            pressure_text = f"{pressure_num:.1f} hPa"
+
+    rain_text = "N/A"
+    if obs.get("Rain") not in (None, ""):
+        rain_num = safe_float(obs.get("Rain"))
+        rain_text = f"{rain_num:.1f} mm" if rain_num is not None else str(obs.get("Rain"))
+
+    temp_text = "N/A"
+    if obs.get("TD") not in (None, ""):
+        temp_num = safe_float(obs.get("TD"))
+        temp_text = f"{temp_num:.1f} °C" if temp_num is not None else f"{obs.get('TD')} °C"
+
+    humidity_text = "N/A"
+    if obs.get("RH") not in (None, ""):
+        rh_num = safe_float(obs.get("RH"))
+        humidity_text = f"{rh_num:.0f} %" if rh_num is not None else f"{obs.get('RH')} %"
+
     return (
         f"📍 {station_name}\n"
         f"Updated: {updated}\n\n"
-        f"Air temperature: {obs.get('TD') or 'N/A'} °C\n"
-        f"Humidity: {obs.get('RH') or 'N/A'} %\n"
-        f"Pressure: {pressure_value or 'N/A'}\n"
-        f"Rain: {obs.get('Rain') or 'N/A'} mm\n"
+        f"Air temperature: {temp_text}\n"
+        f"Humidity: {humidity_text}\n"
+        f"Pressure: {pressure_text}\n"
+        f"Rain: {rain_text}\n"
         f"Wind: {wind_str}\n"
         f"Max gust: {gust_str}"
     )
