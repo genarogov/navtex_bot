@@ -302,18 +302,6 @@ def m_per_min_to_knots(value):
         return None
 
 
-def format_navstyle_datetime(dt):
-    if not dt:
-        return "N/A"
-    return dt.strftime("%d %B %Y / %H%M UTC").upper()
-
-
-def format_israel_datetime(dt):
-    if not dt:
-        return "N/A"
-    return dt.strftime("%d %B %Y / %H%M ISR").upper()
-
-
 def format_direction_with_degrees(deg_value):
     if deg_value in (None, "", "N/A"):
         return "N/A"
@@ -351,6 +339,24 @@ def safe_float(value):
         return float(value)
     except Exception:
         return None
+
+
+def utc_to_israel_local(dt_utc):
+    if not dt_utc:
+        return None
+    return dt_utc.replace(tzinfo=timezone.utc).astimezone(ISRAEL_TZ)
+
+
+def format_full_datetime_with_isr(dt_utc):
+    if not dt_utc:
+        return "N/A"
+
+    dt_isr = utc_to_israel_local(dt_utc)
+    return (
+        f"{dt_utc.strftime('%d %B %Y').upper()} / "
+        f"{dt_utc.strftime('%H%M')} UTC / "
+        f"{dt_isr.strftime('%H%M')} ISR"
+    )
 
 
 # ---------------- COORDINATES ----------------
@@ -966,7 +972,7 @@ def build_sdot_yam_message():
     latest_ts = data.get("latest_ts")
     if latest_ts:
         dt_utc = datetime.utcfromtimestamp(latest_ts / 1000.0)
-        lines.append(f"Updated: {format_navstyle_datetime(dt_utc)}")
+        lines.append(f"Updated: {format_full_datetime_with_isr(dt_utc)}")
     else:
         lines.append("Updated: N/A")
 
@@ -1120,7 +1126,7 @@ def build_cameri_buoy_message(button_text):
     if not latest:
         return f"📍 {config['name']}\nNo data."
 
-    updated = format_navstyle_datetime(latest["time"]) if latest.get("time") else "N/A"
+    updated = format_full_datetime_with_isr(latest["time"]) if latest.get("time") else "N/A"
 
     return (
         f"📍 {config['name']}\n"
@@ -1509,12 +1515,6 @@ def ims_api_time_to_utc(dt_naive):
     return dt_naive - timedelta(hours=2)
 
 
-def utc_to_israel_local(dt_utc):
-    if not dt_utc:
-        return None
-    return dt_utc.replace(tzinfo=timezone.utc).astimezone(ISRAEL_TZ)
-
-
 def get_ims_station_weather(station_name):
     info = fetch_ims_station_info(station_name)
     station_meta = info["station_meta"]
@@ -1554,14 +1554,7 @@ def build_ims_weather_message(station_name):
 
     dt = obs.get("time_obs")
     updated_utc = ims_api_time_to_utc(dt) if dt else None
-    updated_israel = utc_to_israel_local(updated_utc) if updated_utc else None
-
-    if updated_utc and updated_israel:
-        updated = f"{format_navstyle_datetime(updated_utc)} / {format_israel_datetime(updated_israel)}"
-    elif updated_utc:
-        updated = format_navstyle_datetime(updated_utc)
-    else:
-        updated = "N/A"
+    updated = format_full_datetime_with_isr(updated_utc) if updated_utc else "N/A"
 
     pressure_value = obs.get("BP")
     pressure_station_name = IMS_PRESSURE_STATIONS.get(normalize_station_lookup_name(station_name))
