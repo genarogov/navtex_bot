@@ -13,7 +13,7 @@ from email.header import decode_header
 from zoneinfo import ZoneInfo
 
 import requests
-from telegram import ReplyKeyboardMarkup
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from docx import Document
 
@@ -44,8 +44,8 @@ NAVAREA_BOX_LON_MIN = 26.0
 NAVAREA_BOX_LON_MAX = 36.5
 
 # ---------------- CAMERI BUOYS ----------------
-HAIFA_BUOY_BUTTON = "Haifa buoy real time"
-ASHDOD_BUOY_BUTTON = "Ashdod buoy real time"
+HAIFA_BUOY_BUTTON = "Haifa buoy"
+ASHDOD_BUOY_BUTTON = "Ashdod buoy"
 
 CAMERI_QUERY_URL = "https://adva.cameri-eng.com/api/ds/query"
 CAMERI_DATASOURCE_UID = "d4fb9d12-3057-41b7-9ce2-36c7320d8a58"
@@ -115,7 +115,7 @@ IMS_CHANNEL_ALIASES = {
 }
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
-FORECAST_BUTTON = "Forecast Taurus, Delta, Crusade"
+FORECAST_BUTTON = "Forecast Taurus Delta Crusade"
 
 WEATHER_BUTTONS = [
     HAIFA_BUOY_BUTTON,
@@ -130,11 +130,10 @@ WEATHER_BUTTONS = [
 
 WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
-    [HAIFA_BUOY_BUTTON],
-    [ASHDOD_BUOY_BUTTON],
-    ["Haifa Technion weather", "En Karmel weather"],
-    ["Hadera Port weather", "Tel Aviv Coast weather"],
-    ["Ashdod Port weather", "Ashqelon Port weather"],
+    ["Haifa Technion weather", HAIFA_BUOY_BUTTON],
+    ["En Karmel weather", "Hadera Port weather"],
+    ["Tel Aviv Coast weather", "Ashqelon Port weather"],
+    ["Ashdod Port weather", ASHDOD_BUOY_BUTTON],
 ]
 
 # ---------------- LOCK / DUPLICATE GUARD ----------------
@@ -740,7 +739,7 @@ def ordered_content_lines(content_dict):
         except Exception:
             continue
 
-        pairs.sort(key=lambda x: x[0])
+    pairs.sort(key=lambda x: x[0])
     return [v for _, v in pairs if v]
 
 
@@ -1704,14 +1703,8 @@ def handle_weather_button(update, context):
 
     if text == FORECAST_BUTTON:
         msg = get_metarea()
-        for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
-            if i == 0:
-                update.message.reply_text(
-                    chunk,
-                    reply_markup=get_main_keyboard()
-                )
-            else:
-                update.message.reply_text(chunk)
+        for chunk in split_plain_message(msg, limit=4000):
+            update.message.reply_text(chunk)
         return
 
     if text in CAMERI_BUOY_LOCATIONS:
@@ -1720,14 +1713,8 @@ def handle_weather_button(update, context):
         except Exception as e:
             msg = f"CAMERI buoy error: {e}"
 
-        for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
-            if i == 0:
-                update.message.reply_text(
-                    chunk,
-                    reply_markup=get_main_keyboard()
-                )
-            else:
-                update.message.reply_text(chunk)
+        for chunk in split_plain_message(msg, limit=4000):
+            update.message.reply_text(chunk)
         return
 
     if text in IMS_STATIONS:
@@ -1736,14 +1723,8 @@ def handle_weather_button(update, context):
         except Exception as e:
             msg = f"IMS weather error: {e}"
 
-        for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
-            if i == 0:
-                update.message.reply_text(
-                    chunk,
-                    reply_markup=get_main_keyboard()
-                )
-            else:
-                update.message.reply_text(chunk)
+        for chunk in split_plain_message(msg, limit=4000):
+            update.message.reply_text(chunk)
         return
 
     if text not in WEATHER_BUTTONS:
@@ -1829,10 +1810,15 @@ def auto_check(updater):
 
 # ---------------- COMMANDS ----------------
 def start(update, context):
-    update.message.reply_text(
-        "Bot started",
-        reply_markup=get_main_keyboard()
-    )
+    update.message.reply_text("Bot started", reply_markup=ReplyKeyboardRemove())
+
+
+def weather(update, context):
+    update.message.reply_text("Weather menu", reply_markup=get_main_keyboard())
+
+
+def hideweather(update, context):
+    update.message.reply_text("Weather menu hidden", reply_markup=ReplyKeyboardRemove())
 
 
 def checkgovil(update, context):
@@ -1840,7 +1826,7 @@ def checkgovil(update, context):
         latest = fetch_latest_matching_email()
 
         if not latest:
-            update.message.reply_text("No messages", reply_markup=get_main_keyboard())
+            update.message.reply_text("No messages")
             return
 
         ok = process_entry(context.bot, update.message.chat.id, latest)
@@ -1860,7 +1846,7 @@ def checknavarea(update, context):
         latest = fetch_latest_matching_navarea()
 
         if not latest:
-            update.message.reply_text("No NAVAREA III messages in box", reply_markup=get_main_keyboard())
+            update.message.reply_text("No NAVAREA III messages in box")
             return
 
         ok = process_navarea_entry(context.bot, update.message.chat.id, latest)
@@ -1876,7 +1862,7 @@ def checknavarea(update, context):
 
 
 def testbot(update, context):
-    update.message.reply_text("Bot running", reply_markup=get_main_keyboard())
+    update.message.reply_text("Bot running")
 
 
 def clearcache(update, context):
@@ -1888,16 +1874,13 @@ def clearcache(update, context):
         RECENT_SENT_IDS.clear()
         RECENT_NAVAREA_SENT_IDS.clear()
         save_cache(cache)
-    update.message.reply_text("Cache cleared", reply_markup=get_main_keyboard())
+    update.message.reply_text("Cache cleared")
 
 
 def metarea(update, context):
     msg = get_metarea()
-    for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
-        if i == 0:
-            update.message.reply_text(chunk, reply_markup=get_main_keyboard())
-        else:
-            update.message.reply_text(chunk)
+    for chunk in split_plain_message(msg, limit=4000):
+        update.message.reply_text(chunk)
 
 
 # ---------------- MAIN ----------------
@@ -1906,6 +1889,8 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("weather", weather))
+    dp.add_handler(CommandHandler("hideweather", hideweather))
     dp.add_handler(CommandHandler("checkgovil", checkgovil))
     dp.add_handler(CommandHandler("checknavarea", checknavarea))
     dp.add_handler(CommandHandler("testbot", testbot))
