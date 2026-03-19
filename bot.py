@@ -43,10 +43,6 @@ NAVAREA_BOX_LAT_MAX = 38.5
 NAVAREA_BOX_LON_MIN = 26.0
 NAVAREA_BOX_LON_MAX = 36.5
 
-# ---------------- SDOT YAM BUOY ----------------
-SDOT_YAM_BUTTON = "Sdot Yam buoy real time"
-SDOT_YAM_URL = "https://www.wqdatalive.com/public/v3/2281/graphdatamultiple"
-
 # ---------------- CAMERI BUOYS ----------------
 HAIFA_BUOY_BUTTON = "Haifa buoy real time"
 ASHDOD_BUOY_BUTTON = "Ashdod buoy real time"
@@ -122,7 +118,6 @@ IMS_CHANNEL_ALIASES = {
 FORECAST_BUTTON = "Forecast Taurus, Delta, Crusade"
 
 WEATHER_BUTTONS = [
-    SDOT_YAM_BUTTON,
     HAIFA_BUOY_BUTTON,
     ASHDOD_BUOY_BUTTON,
     "Haifa Technion weather",
@@ -135,7 +130,6 @@ WEATHER_BUTTONS = [
 
 WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
-    [SDOT_YAM_BUTTON],
     [HAIFA_BUOY_BUTTON],
     [ASHDOD_BUOY_BUTTON],
     ["Haifa Technion weather", "En Karmel weather"],
@@ -295,13 +289,6 @@ def ms_to_knots(value):
         return None
 
 
-def m_per_min_to_knots(value):
-    try:
-        return float(value) / 30.8666667
-    except Exception:
-        return None
-
-
 def format_direction_with_degrees(deg_value):
     if deg_value in (None, "", "N/A"):
         return "N/A"
@@ -353,7 +340,7 @@ def format_full_datetime_with_isr(dt_utc):
 
     dt_isr = utc_to_israel_local(dt_utc)
     return (
-        f"{dt_utc.strftime('%d %B %Y').upper()} / "
+        f"{dt_utc.strftime('%d %b %Y').upper()} / "
         f"{dt_utc.strftime('%H%M')} UTC / "
         f"{dt_isr.strftime('%H%M')} ISR"
     )
@@ -753,7 +740,7 @@ def ordered_content_lines(content_dict):
         except Exception:
             continue
 
-    pairs.sort(key=lambda x: x[0])
+        pairs.sort(key=lambda x: x[0])
     return [v for _, v in pairs if v]
 
 
@@ -839,192 +826,6 @@ def get_metarea():
     except Exception as e:
         print("METAREA JSON error:", e)
         return f"METAREA JSON error: {e}"
-
-
-# ---------------- SDOT YAM BUOY ----------------
-def get_last_valid_point(points):
-    for item in reversed(points or []):
-        try:
-            ts, value = item[0], item[1]
-        except Exception:
-            continue
-
-        if value is not None:
-            return ts, value
-
-    return None, None
-
-
-def normalize_series_name(name):
-    prefix = "Sdot Yam 10m : "
-    if name.startswith(prefix):
-        return name[len(prefix):].strip()
-    return name.strip()
-
-
-def fetch_sdot_yam_graph(param_ids, include_table_data=0):
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "*/*",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": "https://www.wqdatalive.com",
-        "Referer": "https://www.wqdatalive.com/public/v3/2281?dashboardId=371&panels%5B0%5D%5Bid%5D=6076&panels%5B0%5D%5Btab%5D=data",
-        "X-Requested-With": "XMLHttpRequest",
-    }
-
-    data = []
-    for param_id in param_ids:
-        data.append(("paramIds[]", str(param_id)))
-    data.append(("timeRange", "last_day"))
-    data.append(("includeTableData", str(include_table_data)))
-
-    r = requests.post(SDOT_YAM_URL, headers=headers, data=data, timeout=20)
-    r.raise_for_status()
-    payload = r.json()
-
-    if payload.get("error"):
-        raise Exception("Buoy API returned error=true")
-
-    return payload
-
-
-def fetch_sdot_yam_data():
-    request_groups = [
-        [117409, 117413],  # Wind Direction + Wind Velocity
-        [117452, 117453],  # Current Velocity 2m + Current Direction 2m
-    ]
-
-    series_by_name = {}
-    latest_ts = None
-
-    for group in request_groups:
-        payload = fetch_sdot_yam_graph(group)
-
-        for series in payload.get("graphData", []):
-            name = str(series.get("name", "")).strip()
-            short_name = normalize_series_name(name)
-            unit = str(series.get("unit", "")).strip()
-            ts, value = get_last_valid_point(series.get("data", []))
-
-            if not short_name:
-                continue
-
-            item = {
-                "full_name": name,
-                "short_name": short_name,
-                "unit": unit,
-                "param_id": series.get("paramId"),
-                "timestamp_ms": ts,
-                "value": value,
-            }
-
-            prev = series_by_name.get(short_name)
-            if prev is None:
-                series_by_name[short_name] = item
-            else:
-                prev_ts = prev.get("timestamp_ms")
-                new_ts = item.get("timestamp_ms")
-
-                if prev.get("value") is None and item.get("value") is not None:
-                    series_by_name[short_name] = item
-                elif prev_ts is None and new_ts is not None:
-                    series_by_name[short_name] = item
-                elif prev_ts is not None and new_ts is not None and new_ts >= prev_ts:
-                    series_by_name[short_name] = item
-
-            if ts is not None:
-                if latest_ts is None or ts > latest_ts:
-                    latest_ts = ts
-
-    return {
-        "series": series_by_name,
-        "latest_ts": latest_ts,
-    }
-
-
-def find_series(series_by_name, *needles):
-    needles = [n.lower() for n in needles if n]
-
-    candidates = []
-    for name, item in (series_by_name or {}).items():
-        low = name.lower()
-        if all(n in low for n in needles):
-            candidates.append(item)
-
-    if not candidates:
-        return None
-
-    valued = [x for x in candidates if x.get("value") is not None]
-    if valued:
-        valued.sort(key=lambda x: (x.get("timestamp_ms") or 0), reverse=True)
-        return valued[0]
-
-    candidates.sort(key=lambda x: (x.get("timestamp_ms") or 0), reverse=True)
-    return candidates[0]
-
-
-def build_sdot_yam_message():
-    data = fetch_sdot_yam_data()
-    series = data.get("series", {})
-
-    lines = ["📍 Sdot Yam buoy"]
-
-    latest_ts = data.get("latest_ts")
-    if latest_ts:
-        dt_utc = datetime.utcfromtimestamp(latest_ts / 1000.0)
-        lines.append(f"Updated: {format_full_datetime_with_isr(dt_utc)}")
-    else:
-        lines.append("Updated: N/A")
-
-    lines.append("")
-
-    wind_velocity = (
-        find_series(series, "wind", "velocity")
-        or find_series(series, "wind", "speed")
-    )
-    wind_direction = find_series(series, "wind", "direction")
-
-    current_velocity = (
-        find_series(series, "current", "velocity", "2m")
-        or find_series(series, "current", "speed", "2m")
-        or find_series(series, "current", "velocity")
-    )
-    current_direction = (
-        find_series(series, "current", "direction", "2m")
-        or find_series(series, "current", "direction")
-    )
-
-    if (
-        wind_velocity and wind_velocity.get("value") is not None and
-        wind_direction and wind_direction.get("value") is not None
-    ):
-        wd = float(wind_direction["value"])
-        lines.append(
-            f"Wind: {format_float(wind_velocity['value'], 1)} {wind_velocity['unit']} "
-            f"{deg_to_compass(wd)} ({int(round(wd))}°)"
-        )
-    elif wind_velocity and wind_velocity.get("value") is not None:
-        lines.append(
-            f"Wind: {format_float(wind_velocity['value'], 1)} {wind_velocity['unit']}"
-        )
-    else:
-        lines.append("Wind: N/A")
-
-    if current_velocity and current_velocity.get("value") is not None:
-        current_knots = m_per_min_to_knots(current_velocity["value"])
-
-        if current_direction and current_direction.get("value") is not None:
-            cd = float(current_direction["value"])
-            lines.append(
-                f"Current 2m: {format_float(current_knots, 1)} knots "
-                f"{deg_to_compass(cd)} ({int(round(cd))}°)"
-            )
-        else:
-            lines.append(f"Current 2m: {format_float(current_knots, 1)} knots")
-    else:
-        lines.append("Current 2m: N/A")
-
-    return "\n".join(lines)
 
 
 # ---------------- CAMERI BUOYS ----------------
@@ -1506,10 +1307,6 @@ def find_channel_entry(channel_map, canonical_name):
 
 
 def ims_api_time_to_utc(dt_naive):
-    """
-    IMS docs: API time is in local standard time (winter time) all year.
-    So base conversion to UTC is always minus 2 hours.
-    """
     if not dt_naive:
         return None
     return dt_naive - timedelta(hours=2)
@@ -1907,22 +1704,6 @@ def handle_weather_button(update, context):
 
     if text == FORECAST_BUTTON:
         msg = get_metarea()
-        for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
-            if i == 0:
-                update.message.reply_text(
-                    chunk,
-                    reply_markup=get_main_keyboard()
-                )
-            else:
-                update.message.reply_text(chunk)
-        return
-
-    if text == SDOT_YAM_BUTTON:
-        try:
-            msg = build_sdot_yam_message()
-        except Exception as e:
-            msg = f"Sdot Yam buoy error: {e}"
-
         for i, chunk in enumerate(split_plain_message(msg, limit=4000)):
             if i == 0:
                 update.message.reply_text(
