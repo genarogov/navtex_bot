@@ -65,12 +65,12 @@ IMS_STATIONS_CACHE = {
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 IMS_STATIONS = {
-    "Haifa Technion weather": "HAIFA TECHNION",
-    "En Karmel weather": "EN KARMEL",
-    "Hadera Port weather": "HADERA PORT",
-    "Tel Aviv Coast weather": "TEL AVIV COAST",
-    "Ashdod Port weather": "ASHDOD PORT",
-    "Ashqelon Port weather": "ASHQELON PORT",
+    "Haifa Technion": "HAIFA TECHNION",
+    "En Karmel": "EN KARMEL",
+    "Hadera Port": "HADERA PORT",
+    "Tel Aviv Coast": "TEL AVIV COAST",
+    "Ashdod Port": "ASHDOD PORT",
+    "Ashqelon Port": "ASHQELON PORT",
 }
 
 IMS_PRESSURE_STATIONS = {
@@ -120,20 +120,20 @@ FORECAST_BUTTON = "Forecast Taurus Delta Crusade"
 WEATHER_BUTTONS = [
     HAIFA_BUOY_BUTTON,
     ASHDOD_BUOY_BUTTON,
-    "Haifa Technion weather",
-    "En Karmel weather",
-    "Hadera Port weather",
-    "Tel Aviv Coast weather",
-    "Ashdod Port weather",
-    "Ashqelon Port weather",
+    "Haifa Technion",
+    "En Karmel",
+    "Hadera Port",
+    "Tel Aviv Coast",
+    "Ashdod Port",
+    "Ashqelon Port",
 ]
 
 WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
-    ["Haifa Technion weather", HAIFA_BUOY_BUTTON],
-    ["En Karmel weather", "Hadera Port weather"],
-    ["Tel Aviv Coast weather", "Ashqelon Port weather"],
-    ["Ashdod Port weather", ASHDOD_BUOY_BUTTON],
+    ["Haifa Technion", HAIFA_BUOY_BUTTON],
+    ["En Karmel", "Hadera Port"],
+    ["Tel Aviv Coast", "Ashqelon Port"],
+    ["Ashdod Port", ASHDOD_BUOY_BUTTON],
 ]
 
 # ---------------- LOCK / DUPLICATE GUARD ----------------
