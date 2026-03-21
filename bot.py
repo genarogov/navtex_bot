@@ -13,7 +13,7 @@ from email.header import decode_header
 from zoneinfo import ZoneInfo
 
 import requests
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import ReplyKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from docx import Document
 
@@ -26,7 +26,6 @@ IMS_API_TOKEN = os.getenv("IMS_API_TOKEN", "").strip()
 
 # ---------------- CACHE ----------------
 CACHE_FILE = "cache.json"
-CHECK_INTERVAL = 1800  # 30 min
 TAIL_SCAN_LIMIT = 40
 
 # ---------------- GMAIL FILTERS ----------------
@@ -116,8 +115,13 @@ IMS_CHANNEL_ALIASES = {
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
 FORECAST_BUTTON = "Forecast Taurus Delta Crusade"
+GOV_BUTTON = "gov.il"
+NAVAREA_BUTTON = "Navarea III"
 
 WEATHER_BUTTONS = [
+    GOV_BUTTON,
+    NAVAREA_BUTTON,
+    FORECAST_BUTTON,
     HAIFA_BUOY_BUTTON,
     ASHDOD_BUOY_BUTTON,
     "Haifa Technion",
@@ -129,6 +133,7 @@ WEATHER_BUTTONS = [
 ]
 
 WEATHER_KEYBOARD = [
+    [GOV_BUTTON, NAVAREA_BUTTON],
     [FORECAST_BUTTON],
     ["Haifa Technion", HAIFA_BUOY_BUTTON],
     ["En Karmel", "Hadera Port"],
@@ -617,6 +622,20 @@ def get_status_icon(valid):
             pass
 
     return "✅"
+
+
+def is_valid_date_active(valid):
+    if not valid or valid == "N/A":
+        return False
+
+    for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(valid.strip(), fmt).date()
+            return d >= date.today()
+        except Exception:
+            pass
+
+    return False
 
 
 # ---------------- DOCX ----------------
@@ -1547,6 +1566,15 @@ def send_pdf_bytes(bot, chat_id, pdf_bytes, pdf_name):
     bot.send_document(chat_id=chat_id, document=bio)
 
 
+def extract_payload_from_entry(entry):
+    msg = entry["msg"]
+    file_bytes = extract_docx(msg)
+    if not file_bytes:
+        return None
+    text = read_docx(file_bytes)
+    return extract_notice(text)
+
+
 def process_entry(bot, chat_id, entry):
     msg = entry["msg"]
 
@@ -1578,6 +1606,23 @@ def process_entry(bot, chat_id, entry):
         return False
 
     return True
+
+
+def fetch_active_gov_entries():
+    messages = fetch_recent_matching_emails()
+    active_entries = []
+
+    for entry in messages:
+        try:
+            payload = extract_payload_from_entry(entry)
+            if not payload:
+                continue
+            if is_valid_date_active(payload.get("valid")):
+                active_entries.append(entry)
+        except Exception as e:
+            print("Active GOV parse error:", e)
+
+    return active_entries
 
 
 # ---------------- SEALAGOM / NAVAREA III ----------------
@@ -1697,9 +1742,59 @@ def process_navarea_entry(bot, chat_id, entry):
     return True
 
 
-# ---------------- WEATHER / BUOY BUTTONS ----------------
+# ---------------- WEATHER / GOV / NAVAREA BUTTONS ----------------
 def handle_weather_button(update, context):
     text = (update.message.text or "").strip()
+
+    if text == GOV_BUTTON:
+        with MAIL_LOCK:
+            try:
+                active_entries = fetch_active_gov_entries()
+
+                if not active_entries:
+                    update.message.reply_text("No messages")
+                    return
+
+                sent_any = False
+                for entry in reversed(active_entries):
+                    ok = process_entry(context.bot, update.message.chat.id, entry)
+                    if ok:
+                        RECENT_SENT_IDS.add(entry["id"])
+                        if entry["id"] not in cache["gmail"]:
+                            cache["gmail"].append(entry["id"])
+                            save_cache(cache)
+                        sent_any = True
+
+                if not sent_any:
+                    update.message.reply_text("No messages")
+            except Exception as e:
+                update.message.reply_text(f"GOV.IL error: {e}")
+        return
+
+    if text == NAVAREA_BUTTON:
+        with MAIL_LOCK:
+            try:
+                entries = fetch_recent_matching_navarea()
+
+                if not entries:
+                    update.message.reply_text("No messages")
+                    return
+
+                sent_any = False
+                for entry in reversed(entries):
+                    ok = process_navarea_entry(context.bot, update.message.chat.id, entry)
+                    if ok:
+                        RECENT_NAVAREA_SENT_IDS.add(entry["id"])
+                        if entry["id"] not in cache["sealagom"]:
+                            cache["sealagom"].append(entry["id"])
+                            save_cache(cache)
+                        sent_any = True
+
+                if not sent_any:
+                    update.message.reply_text("No messages")
+            except Exception as e:
+                update.message.reply_text(f"NAVAREA III error: {e}")
+        return
 
     if text == FORECAST_BUTTON:
         msg = get_metarea()
@@ -1731,94 +1826,13 @@ def handle_weather_button(update, context):
         return
 
 
-# ---------------- AUTO CHECK ----------------
-def initialize_gmail_cache_silently():
-    if cache.get("gmail_initialized"):
-        return
-
-    messages = fetch_recent_matching_emails()
-    for m in messages:
-        if m["id"] not in cache["gmail"]:
-            cache["gmail"].append(m["id"])
-
-    cache["gmail_initialized"] = True
-    save_cache(cache)
-
-
-def initialize_sealagom_cache_silently():
-    if cache.get("sealagom_initialized"):
-        return
-
-    try:
-        messages = fetch_recent_matching_navarea()
-        for m in messages:
-            if m["id"] not in cache["sealagom"]:
-                cache["sealagom"].append(m["id"])
-
-        cache["sealagom_initialized"] = True
-        save_cache(cache)
-    except Exception as e:
-        print("SeaLagom init error:", e)
-
-
-def auto_check(updater):
-    if not CHAT_ID:
-        return
-
-    if not MAIL_LOCK.acquire(blocking=False):
-        return
-
-    try:
-        initialize_gmail_cache_silently()
-        messages = fetch_recent_matching_emails()
-
-        for m in reversed(messages):
-            if m["id"] in cache["gmail"]:
-                continue
-            if m["id"] in RECENT_SENT_IDS:
-                continue
-
-            RECENT_SENT_IDS.add(m["id"])
-            ok = process_entry(updater.bot, CHAT_ID, m)
-            cache["gmail"].append(m["id"])
-
-            if ok:
-                save_cache(cache)
-
-        initialize_sealagom_cache_silently()
-        nav_messages = fetch_recent_matching_navarea()
-
-        for m in reversed(nav_messages):
-            if m["id"] in cache["sealagom"]:
-                continue
-            if m["id"] in RECENT_NAVAREA_SENT_IDS:
-                continue
-
-            RECENT_NAVAREA_SENT_IDS.add(m["id"])
-            ok = process_navarea_entry(updater.bot, CHAT_ID, m)
-            cache["sealagom"].append(m["id"])
-
-            if ok:
-                save_cache(cache)
-
-    except Exception as e:
-        print("Auto-check error:", e)
-
-    finally:
-        MAIL_LOCK.release()
-
-
 # ---------------- COMMANDS ----------------
 def start(update, context):
-    update.message.reply_text("Bot started", reply_markup=ReplyKeyboardRemove())
+    update.message.reply_text("Bot started", reply_markup=get_main_keyboard())
 
 
-def weather(update, context):
-    update.message.reply_text("Weather menu", reply_markup=get_main_keyboard())
-
-
-def hideweather(update, context):
-    update.message.reply_text("Weather menu hidden", reply_markup=ReplyKeyboardRemove())
+def startbot(update, context):
+    update.message.reply_text("Bot started", reply_markup=get_main_keyboard())
 
 
 def checkgovil(update, context):
@@ -1841,46 +1855,8 @@ def checkgovil(update, context):
             return
 
 
-def checknavarea(update, context):
-    with MAIL_LOCK:
-        latest = fetch_latest_matching_navarea()
-
-        if not latest:
-            update.message.reply_text("No NAVAREA III messages in box")
-            return
-
-        ok = process_navarea_entry(context.bot, update.message.chat.id, latest)
-
-        RECENT_NAVAREA_SENT_IDS.add(latest["id"])
-
-        if latest["id"] not in cache["sealagom"]:
-            cache["sealagom"].append(latest["id"])
-            save_cache(cache)
-
-        if not ok:
-            return
-
-
 def testbot(update, context):
-    update.message.reply_text("Bot running")
-
-
-def clearcache(update, context):
-    with MAIL_LOCK:
-        cache["gmail"] = []
-        cache["gmail_initialized"] = False
-        cache["sealagom"] = []
-        cache["sealagom_initialized"] = False
-        RECENT_SENT_IDS.clear()
-        RECENT_NAVAREA_SENT_IDS.clear()
-        save_cache(cache)
-    update.message.reply_text("Cache cleared")
-
-
-def metarea(update, context):
-    msg = get_metarea()
-    for chunk in split_plain_message(msg, limit=4000):
-        update.message.reply_text(chunk)
+    update.message.reply_text("Bot running", reply_markup=get_main_keyboard())
 
 
 # ---------------- MAIN ----------------
@@ -1889,21 +1865,14 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("weather", weather))
-    dp.add_handler(CommandHandler("hideweather", hideweather))
+    dp.add_handler(CommandHandler("startbot", startbot))
     dp.add_handler(CommandHandler("checkgovil", checkgovil))
-    dp.add_handler(CommandHandler("checknavarea", checknavarea))
     dp.add_handler(CommandHandler("testbot", testbot))
-    dp.add_handler(CommandHandler("clearcache", clearcache))
-    dp.add_handler(CommandHandler("metarea", metarea))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_weather_button))
 
     updater.start_polling()
     print("BOT STARTED")
-
-    while True:
-        auto_check(updater)
-        time.sleep(CHECK_INTERVAL)
+    updater.idle()
 
 
 if __name__ == "__main__":
