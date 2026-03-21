@@ -66,7 +66,7 @@ IMS_STATIONS = {
     "🌤 Haifa Port": "HAIFA PORT",
     "🌤 En Karmel": "EN KARMEL",
     "🌤 Hadera Port": "HADERA PORT",
-    "🌤 Tel Aviv Port": "TEL AVIV PORT",
+    "🌤 Tel Aviv Coast": "TEL AVIV COAST",
     "🌤 Ashdod Port": "ASHDOD PORT",
     "🌤 Ashqelon Port": "ASHQELON PORT",
 }
@@ -75,7 +75,7 @@ IMS_PRESSURE_STATIONS = {
     "HAIFA PORT": "AFEQ",
     "EN KARMEL": "AFEQ",
     "HADERA PORT": "BET DAGAN",
-    "TEL AVIV PORT": "BET DAGAN",
+    "TEL AVIV COAST": "BET DAGAN",
     "ASHDOD PORT": "BET DAGAN",
     "ASHQELON PORT": "BET DAGAN",
 }
@@ -126,7 +126,7 @@ WEATHER_BUTTONS = [
     "🌤 Haifa Port",
     "🌤 En Karmel",
     "🌤 Hadera Port",
-    "🌤 Tel Aviv Port",
+    "🌤 Tel Aviv Coast",
     "🌤 Ashdod Port",
     "🌤 Ashqelon Port",
 ]
@@ -136,7 +136,7 @@ WEATHER_KEYBOARD = [
     [FORECAST_BUTTON],
     ["🌤 Haifa Port", HAIFA_BUOY_BUTTON],
     ["🌤 En Karmel", "🌤 Hadera Port"],
-    ["🌤 Tel Aviv Port", "🌤 Ashqelon Port"],
+    ["🌤 Tel Aviv Coast", "🌤 Ashqelon Port"],
     ["🌤 Ashdod Port", ASHDOD_BUOY_BUTTON],
 ]
 
