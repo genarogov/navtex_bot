@@ -19,7 +19,6 @@ from docx import Document
 
 # ---------------- ENV ----------------
 TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 IMS_API_TOKEN = os.getenv("IMS_API_TOKEN", "").strip()
@@ -141,10 +140,8 @@ WEATHER_KEYBOARD = [
     ["🌤 Ashdod Port", ASHDOD_BUOY_BUTTON],
 ]
 
-# ---------------- LOCK / DUPLICATE GUARD ----------------
+# ---------------- LOCK ----------------
 MAIL_LOCK = threading.Lock()
-RECENT_SENT_IDS = set()
-RECENT_NAVAREA_SENT_IDS = set()
 
 
 def get_main_keyboard():
@@ -275,13 +272,8 @@ def deg_to_compass(deg):
     except Exception:
         return "N/A"
 
-    dirs = [
-        "N", "NNE", "NE", "ENE",
-        "E", "ESE", "SE", "SSE",
-        "S", "SSW", "SW", "WSW",
-        "W", "WNW", "NW", "NNW"
-    ]
-    return dirs[int((deg + 11.25) / 22.5) % 16]
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    return dirs[int((deg + 22.5) / 45.0) % 8]
 
 
 def ms_to_knots(value):
@@ -639,31 +631,40 @@ def is_valid_date_active(valid):
 
 # ---------------- DOCX ----------------
 def read_docx(file_bytes):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-        tmp.write(file_bytes)
-        path = tmp.name
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
 
-    doc = Document(path)
-    lines = []
+        doc = Document(tmp_path)
+        lines = []
 
-    for p in doc.paragraphs:
-        t = p.text.strip()
-        if t:
-            lines.append(t)
+        for p in doc.paragraphs:
+            t = p.text.strip()
+            if t:
+                lines.append(t)
 
-    for table in doc.tables:
-        for row in table.rows:
-            row_cells = []
-            for cell in row.cells:
-                cell_text = " ".join(
-                    p.text.strip() for p in cell.paragraphs if p.text.strip()
-                ).strip()
-                if cell_text:
-                    row_cells.append(cell_text)
-            if row_cells:
-                lines.append(" | ".join(row_cells))
+        for table in doc.tables:
+            for row in table.rows:
+                row_cells = []
+                for cell in row.cells:
+                    cell_text = " ".join(
+                        p.text.strip() for p in cell.paragraphs if p.text.strip()
+                    ).strip()
+                    if cell_text:
+                        row_cells.append(cell_text)
+                if row_cells:
+                    lines.append(" | ".join(row_cells))
 
-    return "\n".join(lines)
+        return "\n".join(lines)
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 def extract_notice(doc_text):
@@ -1758,7 +1759,6 @@ def handle_weather_button(update, context):
                 for entry in reversed(active_entries):
                     ok = process_entry(context.bot, update.message.chat.id, entry)
                     if ok:
-                        RECENT_SENT_IDS.add(entry["id"])
                         if entry["id"] not in cache["gmail"]:
                             cache["gmail"].append(entry["id"])
                             save_cache(cache)
@@ -1783,7 +1783,6 @@ def handle_weather_button(update, context):
                 for entry in reversed(entries):
                     ok = process_navarea_entry(context.bot, update.message.chat.id, entry)
                     if ok:
-                        RECENT_NAVAREA_SENT_IDS.add(entry["id"])
                         if entry["id"] not in cache["sealagom"]:
                             cache["sealagom"].append(entry["id"])
                             save_cache(cache)
@@ -1843,8 +1842,6 @@ def checkgovil(update, context):
             return
 
         ok = process_entry(context.bot, update.message.chat.id, latest)
-
-        RECENT_SENT_IDS.add(latest["id"])
 
         if latest["id"] not in cache["gmail"]:
             cache["gmail"].append(latest["id"])
