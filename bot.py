@@ -43,8 +43,8 @@ NAVAREA_BOX_LON_MIN = 26.0
 NAVAREA_BOX_LON_MAX = 36.5
 
 # ---------------- CAMERI BUOYS ----------------
-HAIFA_BUOY_BUTTON = "Haifa buoy"
-ASHDOD_BUOY_BUTTON = "Ashdod buoy"
+HAIFA_BUOY_BUTTON = "⚓ Haifa buoy"
+ASHDOD_BUOY_BUTTON = "⚓ Ashdod buoy"
 
 CAMERI_QUERY_URL = "https://adva.cameri-eng.com/api/ds/query"
 CAMERI_DATASOURCE_UID = "d4fb9d12-3057-41b7-9ce2-36c7320d8a58"
@@ -64,12 +64,12 @@ IMS_STATIONS_CACHE = {
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 IMS_STATIONS = {
-    "Haifa Technion": "HAIFA TECHNION",
-    "En Karmel": "EN KARMEL",
-    "Hadera Port": "HADERA PORT",
-    "Tel Aviv Coast": "TEL AVIV COAST",
-    "Ashdod Port": "ASHDOD PORT",
-    "Ashqelon Port": "ASHQELON PORT",
+    "🌤 Haifa Technion": "HAIFA TECHNION",
+    "🌤 En Karmel": "EN KARMEL",
+    "🌤 Hadera Port": "HADERA PORT",
+    "🌤 Tel Aviv Coast": "TEL AVIV COAST",
+    "🌤 Ashdod Port": "ASHDOD PORT",
+    "🌤 Ashqelon Port": "ASHQELON PORT",
 }
 
 IMS_PRESSURE_STATIONS = {
@@ -114,9 +114,9 @@ IMS_CHANNEL_ALIASES = {
 }
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
-FORECAST_BUTTON = "Forecast Taurus Delta Crusade"
-GOV_BUTTON = "gov.il"
-NAVAREA_BUTTON = "Navarea III"
+FORECAST_BUTTON = "🌤 Forecast Taurus Delta Crusade"
+GOV_BUTTON = "📢 gov.il"
+NAVAREA_BUTTON = "📢 Navarea III"
 
 WEATHER_BUTTONS = [
     GOV_BUTTON,
@@ -124,21 +124,21 @@ WEATHER_BUTTONS = [
     FORECAST_BUTTON,
     HAIFA_BUOY_BUTTON,
     ASHDOD_BUOY_BUTTON,
-    "Haifa Technion",
-    "En Karmel",
-    "Hadera Port",
-    "Tel Aviv Coast",
-    "Ashdod Port",
-    "Ashqelon Port",
+    "🌤 Haifa Technion",
+    "🌤 En Karmel",
+    "🌤 Hadera Port",
+    "🌤 Tel Aviv Coast",
+    "🌤 Ashdod Port",
+    "🌤 Ashqelon Port",
 ]
 
 WEATHER_KEYBOARD = [
     [GOV_BUTTON, NAVAREA_BUTTON],
     [FORECAST_BUTTON],
-    ["Haifa Technion", HAIFA_BUOY_BUTTON],
-    ["En Karmel", "Hadera Port"],
-    ["Tel Aviv Coast", "Ashqelon Port"],
-    ["Ashdod Port", ASHDOD_BUOY_BUTTON],
+    ["🌤 Haifa Technion", HAIFA_BUOY_BUTTON],
+    ["🌤 En Karmel", "🌤 Hadera Port"],
+    ["🌤 Tel Aviv Coast", "🌤 Ashqelon Port"],
+    ["🌤 Ashdod Port", ASHDOD_BUOY_BUTTON],
 ]
 
 # ---------------- LOCK / DUPLICATE GUARD ----------------
@@ -949,7 +949,7 @@ def build_cameri_buoy_message(button_text):
 
     return (
         f"📍 {config['name']}\n"
-        f"Updated: {updated}\n\n"
+        f"Upd: {updated}\n\n"
         f"Wave height: {format_float(latest.get('hs'), 2)} m\n"
         f"Peak period: {format_float(latest.get('tp'), 1)} s\n"
         f"Water temperature: {format_float(latest.get('temp'), 1)} °C"
@@ -1411,8 +1411,8 @@ def build_ims_weather_message(station_name):
         humidity_text = f"{rh_num:.0f} %" if rh_num is not None else f"{obs.get('RH')} %"
 
     return (
-        f"📍 {station_name}\n"
-        f"Updated: {updated}\n\n"
+        f"📍 {station_name.replace('🌤 ', '')}\n"
+        f"Upd: {updated}\n\n"
         f"Air temperature: {temp_text}\n"
         f"Humidity: {humidity_text}\n"
         f"Pressure: {pressure_text}\n"
