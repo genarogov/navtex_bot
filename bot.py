@@ -64,17 +64,17 @@ ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 IMS_STATIONS = {
     "🌤 Haifa Port": "HAIFA PORT",
-    "🌤 En Karmel": "EN KARMEL",
     "🌤 Hadera Port": "HADERA PORT",
-    "🌤 Tel Aviv Coast": "TEL AVIV COAST",
+    "🏝 Netanya Coast": "NETANYA",
+    "🏝 Tel Aviv Coast": "TEL AVIV COAST",
     "🌤 Ashdod Port": "ASHDOD PORT",
     "🌤 Ashqelon Port": "ASHQELON PORT",
 }
 
 IMS_PRESSURE_STATIONS = {
     "HAIFA PORT": "AFEQ",
-    "EN KARMEL": "AFEQ",
     "HADERA PORT": "BET DAGAN",
+    "NETANYA": "BET DAGAN",
     "TEL AVIV COAST": "BET DAGAN",
     "ASHDOD PORT": "BET DAGAN",
     "ASHQELON PORT": "BET DAGAN",
@@ -124,9 +124,9 @@ WEATHER_BUTTONS = [
     HAIFA_BUOY_BUTTON,
     ASHDOD_BUOY_BUTTON,
     "🌤 Haifa Port",
-    "🌤 En Karmel",
     "🌤 Hadera Port",
-    "🌤 Tel Aviv Coast",
+    "🏝 Netanya Coast",
+    "🏝 Tel Aviv Coast",
     "🌤 Ashdod Port",
     "🌤 Ashqelon Port",
 ]
@@ -135,8 +135,8 @@ WEATHER_KEYBOARD = [
     [GOV_BUTTON, NAVAREA_BUTTON],
     [FORECAST_BUTTON],
     ["🌤 Haifa Port", HAIFA_BUOY_BUTTON],
-    ["🌤 En Karmel", "🌤 Hadera Port"],
-    ["🌤 Tel Aviv Coast", "🌤 Ashqelon Port"],
+    ["🌤 Hadera Port", "🏝 Netanya Coast"],
+    ["🏝 Tel Aviv Coast", "🌤 Ashqelon Port"],
     ["🌤 Ashdod Port", ASHDOD_BUOY_BUTTON],
 ]
 
@@ -1377,7 +1377,7 @@ def build_ims_weather_message(station_name):
         humidity_text = f"{rh_num:.0f} %" if rh_num is not None else f"{obs.get('RH')} %"
 
     return (
-        f"📍 {station_name.replace('🌤 ', '')}\n"
+        f"📍 {station_name.replace('🌤 ', '').replace('🏝 ', '')}\n"
         f"{updated}\n\n"
         f"Air temperature: {temp_text}\n"
         f"Humidity: {humidity_text}\n"
