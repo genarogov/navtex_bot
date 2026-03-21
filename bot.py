@@ -63,19 +63,19 @@ IMS_STATIONS_CACHE = {
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 IMS_STATIONS = {
-    "🌤 Haifa Technion": "HAIFA TECHNION",
+    "🌤 Haifa Port": "HAIFA PORT",
     "🌤 En Karmel": "EN KARMEL",
     "🌤 Hadera Port": "HADERA PORT",
-    "🌤 Tel Aviv Coast": "TEL AVIV COAST",
+    "🌤 Tel Aviv Port": "TEL AVIV PORT",
     "🌤 Ashdod Port": "ASHDOD PORT",
     "🌤 Ashqelon Port": "ASHQELON PORT",
 }
 
 IMS_PRESSURE_STATIONS = {
-    "HAIFA TECHNION": "AFEQ",
+    "HAIFA PORT": "AFEQ",
     "EN KARMEL": "AFEQ",
     "HADERA PORT": "BET DAGAN",
-    "TEL AVIV COAST": "BET DAGAN",
+    "TEL AVIV PORT": "BET DAGAN",
     "ASHDOD PORT": "BET DAGAN",
     "ASHQELON PORT": "BET DAGAN",
 }
@@ -123,10 +123,10 @@ WEATHER_BUTTONS = [
     FORECAST_BUTTON,
     HAIFA_BUOY_BUTTON,
     ASHDOD_BUOY_BUTTON,
-    "🌤 Haifa Technion",
+    "🌤 Haifa Port",
     "🌤 En Karmel",
     "🌤 Hadera Port",
-    "🌤 Tel Aviv Coast",
+    "🌤 Tel Aviv Port",
     "🌤 Ashdod Port",
     "🌤 Ashqelon Port",
 ]
@@ -134,9 +134,9 @@ WEATHER_BUTTONS = [
 WEATHER_KEYBOARD = [
     [GOV_BUTTON, NAVAREA_BUTTON],
     [FORECAST_BUTTON],
-    ["🌤 Haifa Technion", HAIFA_BUOY_BUTTON],
+    ["🌤 Haifa Port", HAIFA_BUOY_BUTTON],
     ["🌤 En Karmel", "🌤 Hadera Port"],
-    ["🌤 Tel Aviv Coast", "🌤 Ashqelon Port"],
+    ["🌤 Tel Aviv Port", "🌤 Ashqelon Port"],
     ["🌤 Ashdod Port", ASHDOD_BUOY_BUTTON],
 ]
 
