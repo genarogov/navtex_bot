@@ -55,7 +55,6 @@ CAMERI_BUOY_LOCATIONS = {
 # ---------------- IMS WEATHER ----------------
 IMS_API_BASE = "https://api.ims.gov.il/v1/envista"
 IMS_META_CACHE_TTL = 6 * 60 * 60
-IMS_STATION_INFO_CACHE = {}
 IMS_STATIONS_CACHE = {
     "fetched_at": 0,
     "stations": [],
@@ -78,7 +77,6 @@ IMS_PRESSURE_STATIONS = {
     "ASHQELON PORT": "BET DAGAN",
 }
 
-# Use strict documented channel names. Prefer WS1mm over WSmax for "fresh max wind".
 IMS_CHANNEL_PREFERENCE = {
     "TD": ["TD"],
     "RH": ["RH"],
@@ -90,7 +88,6 @@ IMS_CHANNEL_PREFERENCE = {
     "WDmax": ["WDmax"],
 }
 
-# IMS docs: observation date is always in Israel winter time (UTC+2)
 IMS_FIXED_WINTER_TZ = timezone(timedelta(hours=2))
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
@@ -979,48 +976,6 @@ def ims_extract_station_name(station):
     ) or "").strip()
 
 
-def parse_datetime_any(value):
-    if not value:
-        return None
-
-    if isinstance(value, (int, float)):
-        try:
-            if value > 10**12:
-                return datetime.utcfromtimestamp(value / 1000.0)
-            return datetime.utcfromtimestamp(value)
-        except Exception:
-            return None
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    text = text.replace("Z", "+00:00")
-
-    try:
-        dt = datetime.fromisoformat(text)
-        if dt.tzinfo is not None:
-            return dt.replace(tzinfo=None)
-        return dt
-    except Exception:
-        pass
-
-    for fmt in (
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%d/%m/%Y %H:%M:%S",
-        "%d/%m/%Y %H:%M",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y/%m/%d %H:%M",
-    ):
-        try:
-            return datetime.strptime(text, fmt)
-        except Exception:
-            continue
-
-    return None
-
-
 def normalize_station_lookup_name(name):
     return re.sub(r"\s+", " ", str(name or "").upper()).strip()
 
@@ -1065,25 +1020,46 @@ def find_ims_station_by_name(target_name):
     raise Exception(f"IMS station not found: {target_name}")
 
 
-def fetch_ims_station_meta(station_name):
-    cache_key = normalize_station_lookup_name(station_name)
-    now = time.time()
+def parse_datetime_any(value):
+    if not value:
+        return None
 
-    cached = IMS_STATION_INFO_CACHE.get(cache_key)
-    if cached and now - cached["fetched_at"] < IMS_META_CACHE_TTL:
-        return cached["station_meta"]
+    if isinstance(value, (int, float)):
+        try:
+            if value > 10**12:
+                return datetime.utcfromtimestamp(value / 1000.0)
+            return datetime.utcfromtimestamp(value)
+        except Exception:
+            return None
 
-    station = find_ims_station_by_name(station_name)
-    station_id = ims_extract_station_id(station)
-    if station_id is None:
-        raise Exception(f"IMS station id not found for: {station_name}")
+    text = str(value).strip()
+    if not text:
+        return None
 
-    station_meta = ims_request_json(f"/stations/{station_id}")
-    IMS_STATION_INFO_CACHE[cache_key] = {
-        "fetched_at": now,
-        "station_meta": station_meta,
-    }
-    return station_meta
+    text = text.replace("Z", "+00:00")
+
+    try:
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            return dt.replace(tzinfo=None)
+        return dt
+    except Exception:
+        pass
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+
+    return None
 
 
 def ims_measurement_to_utc(dt_value):
@@ -1094,46 +1070,8 @@ def ims_measurement_to_utc(dt_value):
     if not dt:
         return None
 
-    # IMS docs: observation date is always in Israel winter time (UTC+2)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=IMS_FIXED_WINTER_TZ)
-
+    dt = dt.replace(tzinfo=IMS_FIXED_WINTER_TZ)
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
-
-
-def extract_monitors(station_meta):
-    if not isinstance(station_meta, dict):
-        return []
-
-    monitors = first_not_none(
-        station_meta.get("monitors"),
-        station_meta.get("Monitors"),
-        station_meta.get("channels"),
-        station_meta.get("Channels"),
-    ) or []
-
-    return monitors if isinstance(monitors, list) else []
-
-
-def build_station_channel_name_set(station_meta):
-    names = set()
-
-    for mon in extract_monitors(station_meta):
-        if not isinstance(mon, dict):
-            continue
-
-        name = str(first_not_none(
-            mon.get("name"),
-            mon.get("alias"),
-            mon.get("shortName"),
-            mon.get("title"),
-            mon.get("symbol"),
-        ) or "").strip().upper()
-
-        if name:
-            names.add(name)
-
-    return names
 
 
 def extract_latest_measurement_time(latest_data):
@@ -1178,30 +1116,17 @@ def build_latest_channel_map(latest_data):
             item.get("Symbol"),
         ) or "").strip().upper()
 
-        if not name:
-            continue
-
-        result[name] = item
+        if name:
+            result[name] = item
 
     return result
 
 
-def pick_channel_item(latest_channel_map, station_channel_names, canonical_key):
-    for candidate in IMS_CHANNEL_PREFERENCE.get(canonical_key, []):
-        cand = candidate.upper()
-
-        if station_channel_names and cand not in station_channel_names:
-            continue
-
-        item = latest_channel_map.get(cand)
-        if item:
-            return item
-
+def pick_channel_item(latest_channel_map, canonical_key):
     for candidate in IMS_CHANNEL_PREFERENCE.get(canonical_key, []):
         item = latest_channel_map.get(candidate.upper())
         if item:
             return item
-
     return None
 
 
@@ -1236,9 +1161,6 @@ def fetch_ims_station_latest(station_name):
 
 
 def get_ims_station_weather(station_name):
-    station_meta = fetch_ims_station_meta(station_name)
-    station_channel_names = build_station_channel_name_set(station_meta)
-
     station_id, latest_data = fetch_ims_station_latest(station_name)
     latest_channel_map = build_latest_channel_map(latest_data)
 
@@ -1261,7 +1183,7 @@ def get_ims_station_weather(station_name):
         obs["time_obs"] = ims_measurement_to_utc(measurement_time)
 
     for key in ("TD", "RH", "BP", "Rain", "WS", "WD", "WSmax", "WDmax"):
-        item = pick_channel_item(latest_channel_map, station_channel_names, key)
+        item = pick_channel_item(latest_channel_map, key)
         if not item:
             continue
         if not channel_item_is_valid(item):
@@ -1300,10 +1222,7 @@ def build_ims_weather_message(station_name):
     pressure_text = "N/A"
     if pressure_value not in (None, ""):
         pressure_num = safe_float(pressure_value)
-        if pressure_num is None:
-            pressure_text = str(pressure_value)
-        else:
-            pressure_text = f"{pressure_num:.1f} hPa"
+        pressure_text = f"{pressure_num:.1f} hPa" if pressure_num is not None else str(pressure_value)
 
     rain_text = "N/A"
     if obs.get("Rain") not in (None, ""):
