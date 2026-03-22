@@ -52,7 +52,7 @@ CAMERI_BUOY_LOCATIONS = {
     ASHDOD_BUOY_BUTTON: {"name": "Ashdod buoy", "location_id": 2},
 }
 
-# ---------------- IMS WEATHER (1-MINUTE STYLE VIA CHANNEL/DAY API) ----------------
+# ---------------- IMS WEATHER ----------------
 IMS_API_BASE = "https://api.ims.gov.il/v1/envista"
 IMS_META_CACHE_TTL = 6 * 60 * 60
 IMS_STATION_INFO_CACHE = {}
@@ -78,15 +78,15 @@ IMS_PRESSURE_STATIONS = {
     "ASHQELON PORT": "BET DAGAN",
 }
 
-# Prefer exact minute-style channels when station metadata has them.
+# Use strict documented channel names. Prefer WS1mm over WSmax for "fresh max wind".
 IMS_CHANNEL_PREFERENCE = {
     "TD": ["TD"],
     "RH": ["RH"],
     "BP": ["BP"],
-    "Rain": ["Rain_1_min", "min_1_Rain", "Rain"],
+    "Rain": ["Rain"],
     "WS": ["WS"],
     "WD": ["WD"],
-    "WSmax": ["WS1mm", "WSmax"],   # documented 1-minute max wind first
+    "WSmax": ["WS1mm", "WSmax"],
     "WDmax": ["WDmax"],
 }
 
@@ -947,7 +947,16 @@ def ims_request_json(path):
     url = f"{IMS_API_BASE}{path}"
     r = requests.get(url, headers=ims_headers(), timeout=30)
     r.raise_for_status()
-    return r.json()
+
+    text = (r.text or "").strip()
+    if not text:
+        raise Exception(f"IMS empty response for {path}")
+
+    try:
+        return r.json()
+    except Exception:
+        sample = text[:300].replace("\n", " ").replace("\r", " ")
+        raise Exception(f"IMS non-JSON response for {path}: {sample}")
 
 
 def ims_extract_station_id(station):
@@ -968,6 +977,48 @@ def ims_extract_station_name(station):
         station.get("title"),
         station.get("label"),
     ) or "").strip()
+
+
+def parse_datetime_any(value):
+    if not value:
+        return None
+
+    if isinstance(value, (int, float)):
+        try:
+            if value > 10**12:
+                return datetime.utcfromtimestamp(value / 1000.0)
+            return datetime.utcfromtimestamp(value)
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    text = text.replace("Z", "+00:00")
+
+    try:
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            return dt.replace(tzinfo=None)
+        return dt
+    except Exception:
+        pass
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+
+    return None
 
 
 def normalize_station_lookup_name(name):
@@ -1035,48 +1086,6 @@ def fetch_ims_station_meta(station_name):
     return station_meta
 
 
-def parse_datetime_any(value):
-    if not value:
-        return None
-
-    if isinstance(value, (int, float)):
-        try:
-            if value > 10**12:
-                return datetime.utcfromtimestamp(value / 1000.0)
-            return datetime.utcfromtimestamp(value)
-        except Exception:
-            return None
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    text = text.replace("Z", "+00:00")
-
-    try:
-        dt = datetime.fromisoformat(text)
-        if dt.tzinfo is not None:
-            return dt.replace(tzinfo=None)
-        return dt
-    except Exception:
-        pass
-
-    for fmt in (
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%d/%m/%Y %H:%M:%S",
-        "%d/%m/%Y %H:%M",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y/%m/%d %H:%M",
-    ):
-        try:
-            return datetime.strptime(text, fmt)
-        except Exception:
-            continue
-
-    return None
-
-
 def ims_measurement_to_utc(dt_value):
     if not dt_value:
         return None
@@ -1085,7 +1094,7 @@ def ims_measurement_to_utc(dt_value):
     if not dt:
         return None
 
-    # IMS API docs: observation date is always in Israel winter time (UTC+2)
+    # IMS docs: observation date is always in Israel winter time (UTC+2)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=IMS_FIXED_WINTER_TZ)
 
@@ -1106,19 +1115,12 @@ def extract_monitors(station_meta):
     return monitors if isinstance(monitors, list) else []
 
 
-def build_station_channel_map(station_meta):
-    result = {}
+def build_station_channel_name_set(station_meta):
+    names = set()
 
     for mon in extract_monitors(station_meta):
         if not isinstance(mon, dict):
             continue
-
-        channel_id = first_not_none(
-            mon.get("channelId"),
-            mon.get("channel_id"),
-            mon.get("id"),
-            mon.get("monitorId"),
-        )
 
         name = str(first_not_none(
             mon.get("name"),
@@ -1126,59 +1128,94 @@ def build_station_channel_map(station_meta):
             mon.get("shortName"),
             mon.get("title"),
             mon.get("symbol"),
-        ) or "").strip()
+        ) or "").strip().upper()
 
-        if channel_id in (None, "") or not name:
+        if name:
+            names.add(name)
+
+    return names
+
+
+def extract_latest_measurement_time(latest_data):
+    if not isinstance(latest_data, dict):
+        return None
+
+    for key in ("datetime", "dateTime", "time", "Time", "measurementTime", "MeasurementTime"):
+        dt = parse_datetime_any(latest_data.get(key))
+        if dt:
+            return dt
+
+    return None
+
+
+def extract_latest_channels(latest_data):
+    if not isinstance(latest_data, dict):
+        return []
+
+    channels = first_not_none(
+        latest_data.get("channels"),
+        latest_data.get("Channels"),
+        latest_data.get("data"),
+        latest_data.get("Data"),
+    )
+
+    return channels if isinstance(channels, list) else []
+
+
+def build_latest_channel_map(latest_data):
+    result = {}
+
+    for item in extract_latest_channels(latest_data):
+        if not isinstance(item, dict):
             continue
 
-        result[name.upper()] = {
-            "channel_id": channel_id,
-            "name": name.upper(),
-        }
+        name = str(first_not_none(
+            item.get("name"),
+            item.get("Name"),
+            item.get("alias"),
+            item.get("Alias"),
+            item.get("symbol"),
+            item.get("Symbol"),
+        ) or "").strip().upper()
+
+        if not name:
+            continue
+
+        result[name] = item
 
     return result
 
 
-def pick_station_channel(station_channels, canonical_key):
+def pick_channel_item(latest_channel_map, station_channel_names, canonical_key):
     for candidate in IMS_CHANNEL_PREFERENCE.get(canonical_key, []):
-        meta = station_channels.get(candidate.upper())
-        if meta:
-            return meta
+        cand = candidate.upper()
+
+        if station_channel_names and cand not in station_channel_names:
+            continue
+
+        item = latest_channel_map.get(cand)
+        if item:
+            return item
+
+    for candidate in IMS_CHANNEL_PREFERENCE.get(canonical_key, []):
+        item = latest_channel_map.get(candidate.upper())
+        if item:
+            return item
+
     return None
 
 
-def fetch_channel_daily_data(station_id, channel_id):
-    return ims_request_json(f"/stations/{station_id}/data/{channel_id}/daily")
+def channel_item_is_valid(item):
+    valid = item.get("valid", item.get("Valid"))
+    status = item.get("status", item.get("Status"))
+
+    valid_ok = valid in (None, "", True, "true", "True", 1, "1")
+    status_ok = status in (None, "", 1, "1")
+
+    return valid_ok and status_ok
 
 
-def extract_records_from_daily_response(data):
-    records = []
-
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                records.append(item)
-        return records
-
-    if not isinstance(data, dict):
-        return records
-
-    for key in ("data", "Data", "items", "Items", "records", "Records", "measurements", "Measurements"):
-        node = data.get(key)
-        if isinstance(node, list):
-            for item in node:
-                if isinstance(item, dict):
-                    records.append(item)
-            if records:
-                return records
-
-    if any(k in data for k in ("value", "Value", "datetime", "dateTime", "time", "Time", "channels", "Channels")):
-        records.append(data)
-
-    return records
-
-
-def extract_record_value(item):
+def channel_item_value(item):
     return first_not_none(
         item.get("value"),
         item.get("Value"),
@@ -1188,137 +1225,22 @@ def extract_record_value(item):
     )
 
 
-def extract_record_datetime(item):
-    return first_not_none(
-        item.get("datetime"),
-        item.get("dateTime"),
-        item.get("time"),
-        item.get("Time"),
-        item.get("measurementTime"),
-        item.get("MeasurementTime"),
-        item.get("lastUpdate"),
-        item.get("updatedAt"),
-    )
-
-
-def record_is_valid(item):
-    valid = item.get("valid")
-    status = item.get("status")
-
-    valid_ok = valid in (None, "", True, "true", "True", 1, "1")
-    status_ok = status in (None, "", 1, "1")
-
-    return valid_ok and status_ok
-
-
-def choose_latest_valid_record(records):
-    best = None
-    best_utc = None
-
-    for item in records:
-        if not isinstance(item, dict):
-            continue
-        if not record_is_valid(item):
-            continue
-
-        value = extract_record_value(item)
-        if value in (None, ""):
-            continue
-
-        dt_utc = ims_measurement_to_utc(extract_record_datetime(item))
-        if not dt_utc:
-            continue
-
-        if best is None or dt_utc >= best_utc:
-            best = item
-            best_utc = dt_utc
-
-    if best is None:
-        return None
-
-    return {
-        "value": extract_record_value(best),
-        "time_utc": best_utc,
-    }
-
-
-def try_extract_channels_array_record(data):
-    """
-    Some IMS responses return:
-    {
-      "stations": ...,
-      "datetime": ...,
-      "channels": [{...}, ...]
-    }
-    or similar with "Channels".
-    We normalize that here.
-    """
-    if not isinstance(data, dict):
-        return []
-
-    channels = first_not_none(data.get("channels"), data.get("Channels"))
-    if not isinstance(channels, list):
-        return []
-
-    dt = extract_record_datetime(data)
-    normalized = []
-
-    for ch in channels:
-        if not isinstance(ch, dict):
-            continue
-
-        normalized.append({
-            "value": first_not_none(ch.get("value"), ch.get("Value")),
-            "datetime": first_not_none(
-                ch.get("datetime"),
-                ch.get("dateTime"),
-                ch.get("time"),
-                ch.get("Time"),
-                dt,
-            ),
-            "valid": first_not_none(ch.get("valid"), ch.get("Valid"), data.get("valid")),
-            "status": first_not_none(ch.get("status"), ch.get("Status"), data.get("status")),
-            "id": first_not_none(ch.get("id"), ch.get("Id"), ch.get("channelId")),
-            "name": first_not_none(ch.get("name"), ch.get("Name")),
-        })
-
-    return normalized
-
-
-def fetch_latest_station_channel_value(station_id, channel_meta):
-    channel_id = channel_meta["channel_id"]
-    data = fetch_channel_daily_data(station_id, channel_id)
-
-    # Shape 1: direct records list / record dict
-    records = extract_records_from_daily_response(data)
-
-    # Shape 2: top-level channels list
-    if len(records) == 1 and isinstance(records[0], dict):
-        extra = try_extract_channels_array_record(records[0])
-        if extra:
-            filtered = []
-            for item in extra:
-                item_id = str(first_not_none(item.get("id"), "")).strip()
-                if item_id and str(channel_id) == item_id:
-                    filtered.append(item)
-                else:
-                    item_name = str(first_not_none(item.get("name"), "")).strip().upper()
-                    if item_name and item_name == channel_meta["name"].upper():
-                        filtered.append(item)
-            if filtered:
-                records = filtered
-
-    return choose_latest_valid_record(records)
-
-
-def get_ims_station_weather(station_name):
+def fetch_ims_station_latest(station_name):
     station = find_ims_station_by_name(station_name)
     station_id = ims_extract_station_id(station)
     if station_id is None:
         raise Exception(f"IMS station id not found for: {station_name}")
 
+    latest_data = ims_request_json(f"/stations/{station_id}/data/latest")
+    return station_id, latest_data
+
+
+def get_ims_station_weather(station_name):
     station_meta = fetch_ims_station_meta(station_name)
-    station_channels = build_station_channel_map(station_meta)
+    station_channel_names = build_station_channel_name_set(station_meta)
+
+    station_id, latest_data = fetch_ims_station_latest(station_name)
+    latest_channel_map = build_latest_channel_map(latest_data)
 
     obs = {
         "TD": None,
@@ -1334,23 +1256,22 @@ def get_ims_station_weather(station_name):
         "station_name": station_name,
     }
 
-    all_times = []
+    measurement_time = extract_latest_measurement_time(latest_data)
+    if measurement_time:
+        obs["time_obs"] = ims_measurement_to_utc(measurement_time)
 
     for key in ("TD", "RH", "BP", "Rain", "WS", "WD", "WSmax", "WDmax"):
-        channel_meta = pick_station_channel(station_channels, key)
-        if not channel_meta:
+        item = pick_channel_item(latest_channel_map, station_channel_names, key)
+        if not item:
+            continue
+        if not channel_item_is_valid(item):
             continue
 
-        latest = fetch_latest_station_channel_value(station_id, channel_meta)
-        if not latest:
+        value = channel_item_value(item)
+        if value in (None, ""):
             continue
 
-        obs[key] = latest["value"]
-        if latest.get("time_utc"):
-            all_times.append(latest["time_utc"])
-
-    if all_times:
-        obs["time_obs"] = max(all_times)
+        obs[key] = value
 
     return obs
 
@@ -1387,7 +1308,7 @@ def build_ims_weather_message(station_name):
     rain_text = "N/A"
     if obs.get("Rain") not in (None, ""):
         rain_num = safe_float(obs.get("Rain"))
-        rain_text = f"{rain_num:.2f} mm" if rain_num is not None else str(obs.get("Rain"))
+        rain_text = f"{rain_num:.1f} mm" if rain_num is not None else str(obs.get("Rain"))
 
     temp_text = "N/A"
     if obs.get("TD") not in (None, ""):
@@ -1399,10 +1320,8 @@ def build_ims_weather_message(station_name):
         rh_num = safe_float(obs.get("RH"))
         humidity_text = f"{rh_num:.0f} %" if rh_num is not None else f"{obs.get('RH')} %"
 
-    station_title = station_name.replace("🌤 ", "").replace("🏝 ", "")
-
     return (
-        f"📍 {station_title}\n"
+        f"📍 {station_name.replace('🌤 ', '').replace('🏝 ', '')}\n"
         f"{updated}\n\n"
         f"Air temperature: {temp_text}\n"
         f"Humidity: {humidity_text}\n"
