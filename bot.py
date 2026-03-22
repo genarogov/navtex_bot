@@ -63,18 +63,16 @@ IMS_STATIONS_CACHE = {
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 IMS_STATIONS = {
-    "🌤 Haifa Port": "HAIFA PORT",
+    "🌤 Haifa Refineries": "HAIFA REFINERIES",
     "🌤 Hadera Port": "HADERA PORT",
-    "🏝 Netanya Coast": "NETANYA",
     "🏝 Tel Aviv Coast": "TEL AVIV COAST",
     "🌤 Ashdod Port": "ASHDOD PORT",
     "🌤 Ashqelon Port": "ASHQELON PORT",
 }
 
 IMS_PRESSURE_STATIONS = {
-    "HAIFA PORT": "AFEQ",
+    "HAIFA REFINERIES": "AFEQ",
     "HADERA PORT": "BET DAGAN",
-    "NETANYA": "BET DAGAN",
     "TEL AVIV COAST": "BET DAGAN",
     "ASHDOD PORT": "BET DAGAN",
     "ASHQELON PORT": "BET DAGAN",
@@ -123,9 +121,8 @@ WEATHER_BUTTONS = [
     FORECAST_BUTTON,
     HAIFA_BUOY_BUTTON,
     ASHDOD_BUOY_BUTTON,
-    "🌤 Haifa Port",
+    "🌤 Haifa Refineries",
     "🌤 Hadera Port",
-    "🏝 Netanya Coast",
     "🏝 Tel Aviv Coast",
     "🌤 Ashdod Port",
     "🌤 Ashqelon Port",
@@ -134,10 +131,9 @@ WEATHER_BUTTONS = [
 WEATHER_KEYBOARD = [
     [GOV_BUTTON, NAVAREA_BUTTON],
     [FORECAST_BUTTON],
-    ["🌤 Haifa Port", HAIFA_BUOY_BUTTON],
-    ["🌤 Hadera Port", "🏝 Netanya Coast"],
-    ["🏝 Tel Aviv Coast", "🌤 Ashqelon Port"],
-    ["🌤 Ashdod Port", ASHDOD_BUOY_BUTTON],
+    ["🌤 Haifa Refineries", HAIFA_BUOY_BUTTON],
+    ["🌤 Hadera Port", "🏝 Tel Aviv Coast"],
+    ["🌤 Ashqelon Port", "🌤 Ashdod Port"],
 ]
 
 # ---------------- LOCK ----------------
@@ -1082,31 +1078,32 @@ def find_ims_station_by_name(target_name):
 
 def fetch_ims_station_info(station_name):
     cache_key = normalize_station_lookup_name(station_name)
-    cached = IMS_STATION_INFO_CACHE.get(cache_key)
     now = time.time()
-
-    if cached and now - cached["fetched_at"] < IMS_STATION_CACHE_TTL:
-        return cached["data"]
 
     station = find_ims_station_by_name(station_name)
     station_id = ims_extract_station_id(station)
     if station_id is None:
         raise Exception(f"IMS station id not found for: {station_name}")
 
-    station_meta = ims_request_json(f"/stations/{station_id}")
+    cached = IMS_STATION_INFO_CACHE.get(cache_key)
+
+    if cached and now - cached["fetched_at"] < IMS_STATION_CACHE_TTL:
+        station_meta = cached["station_meta"]
+    else:
+        station_meta = ims_request_json(f"/stations/{station_id}")
+        IMS_STATION_INFO_CACHE[cache_key] = {
+            "fetched_at": now,
+            "station_meta": station_meta,
+        }
+
     latest_data = ims_request_json(f"/stations/{station_id}/data/latest")
 
-    data = {
+    return {
         "station": station,
         "station_id": station_id,
         "station_meta": station_meta,
         "latest_data": latest_data,
     }
-    IMS_STATION_INFO_CACHE[cache_key] = {
-        "fetched_at": now,
-        "data": data,
-    }
-    return data
 
 
 def recursive_find_first_datetime(node):
@@ -1407,14 +1404,18 @@ def get_ims_station_weather(station_name):
         "time_obs": None,
     }
 
+    all_times = []
+
     for key in ("TD", "RH", "BP", "Rain", "WS", "WD", "WSmax", "WDmax"):
         entry = find_channel_entry(channel_map, key)
         if entry:
             obs[key] = entry.get("value")
-            if obs["time_obs"] is None and entry.get("datetime") is not None:
-                obs["time_obs"] = entry.get("datetime")
+            if entry.get("datetime") is not None:
+                all_times.append(entry.get("datetime"))
 
-    if obs["time_obs"] is None:
+    if all_times:
+        obs["time_obs"] = max(all_times)
+    else:
         obs["time_obs"] = recursive_find_first_datetime(latest_data)
 
     obs["station_name"] = station_name
