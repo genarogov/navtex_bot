@@ -132,8 +132,8 @@ WEATHER_KEYBOARD = [
     [GOV_BUTTON, NAVAREA_BUTTON],
     [FORECAST_BUTTON],
     ["🌤 Haifa Technion", HAIFA_BUOY_BUTTON],
-    ["🌤 Hadera Port", "🌤 Ashdod Port"],
-    ["🌤 Ashqelon Port", ASHDOD_BUOY_BUTTON],
+    ["🌤 Hadera Port", "🌤 Ashqelon Port"],
+    ["🌤 Ashdod Port", ASHDOD_BUOY_BUTTON],
     ["🏝 Tel Aviv Coast"],
 ]
 
@@ -1012,7 +1012,7 @@ def parse_datetime_any(value):
     try:
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is not None:
-            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt.replace(tzinfo=None)
         return dt
     except Exception:
         pass
@@ -1345,25 +1345,25 @@ def ims_api_time_to_utc(dt_naive):
     if not dt_naive:
         return None
     ims_dt = dt_naive.replace(tzinfo=timezone(timedelta(hours=2)))
-    return ims_dt.astimezone(timezone.utc)
+    return ims_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def ims_api_time_to_local(dt_naive):
     if not dt_naive:
         return None
     ims_dt = dt_naive.replace(tzinfo=timezone(timedelta(hours=2)))
-    return ims_dt.astimezone(ISRAEL_TZ)
+    return ims_dt.astimezone(ISRAEL_TZ).replace(tzinfo=None)
 
 
-def format_ims_updated(dt_naive):
+def format_ims_datetime_with_local_and_utc(dt_naive):
     if not dt_naive:
-        return "Updated: N/A"
+        return "N/A"
 
-    local_dt = ims_api_time_to_local(dt_naive)
-    utc_dt = ims_api_time_to_utc(dt_naive)
+    dt_local = ims_api_time_to_local(dt_naive)
+    dt_utc = ims_api_time_to_utc(dt_naive)
     return (
-        f"Updated: {local_dt.strftime('%d %B %Y').upper()}\n"
-        f"{local_dt.strftime('%H:%M')} LT / {utc_dt.strftime('%H:%M')} UTC"
+        f"Updated: {dt_local.strftime('%d %B %Y').upper()}\n"
+        f"{dt_local.strftime('%H:%M')} LT / {dt_utc.strftime('%H:%M')} UTC"
     )
 
 
@@ -1371,7 +1371,7 @@ def build_ims_weather_message(station_name):
     obs = get_ims_station_weather(station_name)
 
     dt = obs.get("time_obs")
-    updated = format_ims_updated(dt)
+    updated = format_ims_datetime_with_local_and_utc(dt) if dt else "N/A"
 
     pressure_value = obs.get("BP")
     pressure_station_name = IMS_PRESSURE_STATIONS.get(normalize_station_lookup_name(station_name))
