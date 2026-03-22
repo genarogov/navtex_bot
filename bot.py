@@ -134,6 +134,7 @@ WEATHER_KEYBOARD = [
     ["🌤 Haifa Refineries", HAIFA_BUOY_BUTTON],
     ["🌤 Hadera Port", "🏝 Tel Aviv Coast"],
     ["🌤 Ashqelon Port", "🌤 Ashdod Port"],
+    [ASHDOD_BUOY_BUTTON],
 ]
 
 # ---------------- LOCK ----------------
@@ -1128,6 +1129,26 @@ def recursive_find_first_datetime(node):
     return None
 
 
+def extract_latest_data_measurement_time(latest_data):
+    if not isinstance(latest_data, dict):
+        return None
+
+    for key in ("datetime", "dateTime", "time", "Time", "measurementTime", "MeasurementTime"):
+        dt = parse_datetime_any(latest_data.get(key))
+        if dt:
+            return dt
+
+    for key in ("data", "Data", "channels", "Channels", "monitors", "Monitors"):
+        node = latest_data.get(key)
+        if isinstance(node, dict):
+            for subkey in ("datetime", "dateTime", "time", "Time", "measurementTime", "MeasurementTime"):
+                dt = parse_datetime_any(node.get(subkey))
+                if dt:
+                    return dt
+
+    return None
+
+
 def collect_monitor_name_map(station_meta):
     result = {}
 
@@ -1413,7 +1434,10 @@ def get_ims_station_weather(station_name):
             if entry.get("datetime") is not None:
                 all_times.append(entry.get("datetime"))
 
-    if all_times:
+    top_level_time = extract_latest_data_measurement_time(latest_data)
+    if top_level_time is not None:
+        obs["time_obs"] = top_level_time
+    elif all_times:
         obs["time_obs"] = max(all_times)
     else:
         obs["time_obs"] = recursive_find_first_datetime(latest_data)
