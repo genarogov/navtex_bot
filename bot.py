@@ -19,7 +19,6 @@ from docx import Document
 
 # ---------------- ENV ----------------
 TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 IMS_API_TOKEN = os.getenv("IMS_API_TOKEN", "").strip()
@@ -43,8 +42,8 @@ NAVAREA_BOX_LON_MIN = 26.0
 NAVAREA_BOX_LON_MAX = 36.5
 
 # ---------------- CAMERI BUOYS ----------------
-HAIFA_BUOY_BUTTON = "Haifa buoy"
-ASHDOD_BUOY_BUTTON = "Ashdod buoy"
+HAIFA_BUOY_BUTTON = "🛟 Haifa buoy"
+ASHDOD_BUOY_BUTTON = "🛟 Ashdod buoy"
 
 CAMERI_QUERY_URL = "https://adva.cameri-eng.com/api/ds/query"
 CAMERI_DATASOURCE_UID = "d4fb9d12-3057-41b7-9ce2-36c7320d8a58"
@@ -64,17 +63,15 @@ IMS_STATIONS_CACHE = {
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 IMS_STATIONS = {
-    "Haifa Technion": "HAIFA TECHNION",
-    "En Karmel": "EN KARMEL",
-    "Hadera Port": "HADERA PORT",
-    "Tel Aviv Coast": "TEL AVIV COAST",
-    "Ashdod Port": "ASHDOD PORT",
-    "Ashqelon Port": "ASHQELON PORT",
+    "🌤 Haifa Refineries": "HAIFA REFINERIES",
+    "🌤 Hadera Port": "HADERA PORT",
+    "🏝 Tel Aviv Coast": "TEL AVIV COAST",
+    "🌤 Ashdod Port": "ASHDOD PORT",
+    "🌤 Ashqelon Port": "ASHQELON PORT",
 }
 
 IMS_PRESSURE_STATIONS = {
-    "HAIFA TECHNION": "AFEQ",
-    "EN KARMEL": "AFEQ",
+    "HAIFA REFINERIES": "AFEQ",
     "HADERA PORT": "BET DAGAN",
     "TEL AVIV COAST": "BET DAGAN",
     "ASHDOD PORT": "BET DAGAN",
@@ -114,9 +111,9 @@ IMS_CHANNEL_ALIASES = {
 }
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
-FORECAST_BUTTON = "Forecast Taurus Delta Crusade"
-GOV_BUTTON = "gov.il"
-NAVAREA_BUTTON = "Navarea III"
+FORECAST_BUTTON = "🌤 Forecast Taurus Delta Crusade"
+GOV_BUTTON = "📜 gov.il"
+NAVAREA_BUTTON = "📜 Navarea III"
 
 WEATHER_BUTTONS = [
     GOV_BUTTON,
@@ -124,27 +121,24 @@ WEATHER_BUTTONS = [
     FORECAST_BUTTON,
     HAIFA_BUOY_BUTTON,
     ASHDOD_BUOY_BUTTON,
-    "Haifa Technion",
-    "En Karmel",
-    "Hadera Port",
-    "Tel Aviv Coast",
-    "Ashdod Port",
-    "Ashqelon Port",
+    "🌤 Haifa Refineries",
+    "🌤 Hadera Port",
+    "🏝 Tel Aviv Coast",
+    "🌤 Ashdod Port",
+    "🌤 Ashqelon Port",
 ]
 
 WEATHER_KEYBOARD = [
     [GOV_BUTTON, NAVAREA_BUTTON],
     [FORECAST_BUTTON],
-    ["Haifa Technion", HAIFA_BUOY_BUTTON],
-    ["En Karmel", "Hadera Port"],
-    ["Tel Aviv Coast", "Ashqelon Port"],
-    ["Ashdod Port", ASHDOD_BUOY_BUTTON],
+    ["🌤 Haifa Refineries", HAIFA_BUOY_BUTTON],
+    ["🌤 Hadera Port", "🏝 Tel Aviv Coast"],
+    ["🌤 Ashqelon Port", "🌤 Ashdod Port"],
+    [ASHDOD_BUOY_BUTTON],
 ]
 
-# ---------------- LOCK / DUPLICATE GUARD ----------------
+# ---------------- LOCK ----------------
 MAIL_LOCK = threading.Lock()
-RECENT_SENT_IDS = set()
-RECENT_NAVAREA_SENT_IDS = set()
 
 
 def get_main_keyboard():
@@ -275,13 +269,8 @@ def deg_to_compass(deg):
     except Exception:
         return "N/A"
 
-    dirs = [
-        "N", "NNE", "NE", "ENE",
-        "E", "ESE", "SE", "SSE",
-        "S", "SSW", "SW", "WSW",
-        "W", "WNW", "NW", "NNW"
-    ]
-    return dirs[int((deg + 11.25) / 22.5) % 16]
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    return dirs[int((deg + 22.5) / 45.0) % 8]
 
 
 def ms_to_knots(value):
@@ -344,9 +333,8 @@ def format_full_datetime_with_isr(dt_utc):
 
     dt_isr = utc_to_israel_local(dt_utc)
     return (
-        f"{dt_utc.strftime('%d %b %Y').upper()} / "
-        f"{dt_utc.strftime('%H%M')} UTC / "
-        f"{dt_isr.strftime('%H%M')} ISR"
+        f"Updated: {dt_utc.strftime('%d %B %Y').upper()}\n"
+        f"{dt_utc.strftime('%H:%M')} UTC / {dt_isr.strftime('%H:%M')} LT"
     )
 
 
@@ -640,31 +628,40 @@ def is_valid_date_active(valid):
 
 # ---------------- DOCX ----------------
 def read_docx(file_bytes):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-        tmp.write(file_bytes)
-        path = tmp.name
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
 
-    doc = Document(path)
-    lines = []
+        doc = Document(tmp_path)
+        lines = []
 
-    for p in doc.paragraphs:
-        t = p.text.strip()
-        if t:
-            lines.append(t)
+        for p in doc.paragraphs:
+            t = p.text.strip()
+            if t:
+                lines.append(t)
 
-    for table in doc.tables:
-        for row in table.rows:
-            row_cells = []
-            for cell in row.cells:
-                cell_text = " ".join(
-                    p.text.strip() for p in cell.paragraphs if p.text.strip()
-                ).strip()
-                if cell_text:
-                    row_cells.append(cell_text)
-            if row_cells:
-                lines.append(" | ".join(row_cells))
+        for table in doc.tables:
+            for row in table.rows:
+                row_cells = []
+                for cell in row.cells:
+                    cell_text = " ".join(
+                        p.text.strip() for p in cell.paragraphs if p.text.strip()
+                    ).strip()
+                    if cell_text:
+                        row_cells.append(cell_text)
+                if row_cells:
+                    lines.append(" | ".join(row_cells))
 
-    return "\n".join(lines)
+        return "\n".join(lines)
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 def extract_notice(doc_text):
@@ -949,7 +946,7 @@ def build_cameri_buoy_message(button_text):
 
     return (
         f"📍 {config['name']}\n"
-        f"Updated: {updated}\n\n"
+        f"{updated}\n\n"
         f"Wave height: {format_float(latest.get('hs'), 2)} m\n"
         f"Peak period: {format_float(latest.get('tp'), 1)} s\n"
         f"Water temperature: {format_float(latest.get('temp'), 1)} °C"
@@ -1082,31 +1079,32 @@ def find_ims_station_by_name(target_name):
 
 def fetch_ims_station_info(station_name):
     cache_key = normalize_station_lookup_name(station_name)
-    cached = IMS_STATION_INFO_CACHE.get(cache_key)
     now = time.time()
-
-    if cached and now - cached["fetched_at"] < IMS_STATION_CACHE_TTL:
-        return cached["data"]
 
     station = find_ims_station_by_name(station_name)
     station_id = ims_extract_station_id(station)
     if station_id is None:
         raise Exception(f"IMS station id not found for: {station_name}")
 
-    station_meta = ims_request_json(f"/stations/{station_id}")
+    cached = IMS_STATION_INFO_CACHE.get(cache_key)
+
+    if cached and now - cached["fetched_at"] < IMS_STATION_CACHE_TTL:
+        station_meta = cached["station_meta"]
+    else:
+        station_meta = ims_request_json(f"/stations/{station_id}")
+        IMS_STATION_INFO_CACHE[cache_key] = {
+            "fetched_at": now,
+            "station_meta": station_meta,
+        }
+
     latest_data = ims_request_json(f"/stations/{station_id}/data/latest")
 
-    data = {
+    return {
         "station": station,
         "station_id": station_id,
         "station_meta": station_meta,
         "latest_data": latest_data,
     }
-    IMS_STATION_INFO_CACHE[cache_key] = {
-        "fetched_at": now,
-        "data": data,
-    }
-    return data
 
 
 def recursive_find_first_datetime(node):
@@ -1127,6 +1125,26 @@ def recursive_find_first_datetime(node):
             dt = recursive_find_first_datetime(item)
             if dt:
                 return dt
+
+    return None
+
+
+def extract_latest_data_measurement_time(latest_data):
+    if not isinstance(latest_data, dict):
+        return None
+
+    for key in ("datetime", "dateTime", "time", "Time", "measurementTime", "MeasurementTime"):
+        dt = parse_datetime_any(latest_data.get(key))
+        if dt:
+            return dt
+
+    for key in ("data", "Data", "channels", "Channels", "monitors", "Monitors"):
+        node = latest_data.get(key)
+        if isinstance(node, dict):
+            for subkey in ("datetime", "dateTime", "time", "Time", "measurementTime", "MeasurementTime"):
+                dt = parse_datetime_any(node.get(subkey))
+                if dt:
+                    return dt
 
     return None
 
@@ -1330,40 +1348,6 @@ def ims_api_time_to_utc(dt_naive):
     return dt_naive - timedelta(hours=2)
 
 
-def get_ims_station_weather(station_name):
-    info = fetch_ims_station_info(station_name)
-    station_meta = info["station_meta"]
-    latest_data = info["latest_data"]
-
-    channel_map = build_channel_value_map(station_meta, latest_data)
-
-    obs = {
-        "TD": None,
-        "RH": None,
-        "BP": None,
-        "Rain": None,
-        "WS": None,
-        "WD": None,
-        "WSmax": None,
-        "WDmax": None,
-        "time_obs": None,
-    }
-
-    for key in ("TD", "RH", "BP", "Rain", "WS", "WD", "WSmax", "WDmax"):
-        entry = find_channel_entry(channel_map, key)
-        if entry:
-            obs[key] = entry.get("value")
-            if obs["time_obs"] is None and entry.get("datetime") is not None:
-                obs["time_obs"] = entry.get("datetime")
-
-    if obs["time_obs"] is None:
-        obs["time_obs"] = recursive_find_first_datetime(latest_data)
-
-    obs["station_name"] = station_name
-    obs["station_id"] = info["station_id"]
-    return obs
-
-
 def build_ims_weather_message(station_name):
     obs = get_ims_station_weather(station_name)
 
@@ -1411,8 +1395,8 @@ def build_ims_weather_message(station_name):
         humidity_text = f"{rh_num:.0f} %" if rh_num is not None else f"{obs.get('RH')} %"
 
     return (
-        f"📍 {station_name}\n"
-        f"Updated: {updated}\n\n"
+        f"📍 {station_name.replace('🌤 ', '').replace('🏝 ', '')}\n"
+        f"{updated}\n\n"
         f"Air temperature: {temp_text}\n"
         f"Humidity: {humidity_text}\n"
         f"Pressure: {pressure_text}\n"
@@ -1420,6 +1404,47 @@ def build_ims_weather_message(station_name):
         f"Wind: {wind_str}\n"
         f"Max gust: {gust_str}"
     )
+
+
+def get_ims_station_weather(station_name):
+    info = fetch_ims_station_info(station_name)
+    station_meta = info["station_meta"]
+    latest_data = info["latest_data"]
+
+    channel_map = build_channel_value_map(station_meta, latest_data)
+
+    obs = {
+        "TD": None,
+        "RH": None,
+        "BP": None,
+        "Rain": None,
+        "WS": None,
+        "WD": None,
+        "WSmax": None,
+        "WDmax": None,
+        "time_obs": None,
+    }
+
+    all_times = []
+
+    for key in ("TD", "RH", "BP", "Rain", "WS", "WD", "WSmax", "WDmax"):
+        entry = find_channel_entry(channel_map, key)
+        if entry:
+            obs[key] = entry.get("value")
+            if entry.get("datetime") is not None:
+                all_times.append(entry.get("datetime"))
+
+    top_level_time = extract_latest_data_measurement_time(latest_data)
+    if top_level_time is not None:
+        obs["time_obs"] = top_level_time
+    elif all_times:
+        obs["time_obs"] = max(all_times)
+    else:
+        obs["time_obs"] = recursive_find_first_datetime(latest_data)
+
+    obs["station_name"] = station_name
+    obs["station_id"] = info["station_id"]
+    return obs
 
 
 # ---------------- GMAIL ----------------
@@ -1759,7 +1784,6 @@ def handle_weather_button(update, context):
                 for entry in reversed(active_entries):
                     ok = process_entry(context.bot, update.message.chat.id, entry)
                     if ok:
-                        RECENT_SENT_IDS.add(entry["id"])
                         if entry["id"] not in cache["gmail"]:
                             cache["gmail"].append(entry["id"])
                             save_cache(cache)
@@ -1784,7 +1808,6 @@ def handle_weather_button(update, context):
                 for entry in reversed(entries):
                     ok = process_navarea_entry(context.bot, update.message.chat.id, entry)
                     if ok:
-                        RECENT_NAVAREA_SENT_IDS.add(entry["id"])
                         if entry["id"] not in cache["sealagom"]:
                             cache["sealagom"].append(entry["id"])
                             save_cache(cache)
@@ -1844,8 +1867,6 @@ def checkgovil(update, context):
             return
 
         ok = process_entry(context.bot, update.message.chat.id, latest)
-
-        RECENT_SENT_IDS.add(latest["id"])
 
         if latest["id"] not in cache["gmail"]:
             cache["gmail"].append(latest["id"])
