@@ -338,6 +338,16 @@ def format_full_datetime_with_isr(dt_utc):
     )
 
 
+def format_ims_datetime(dt_value):
+    if not dt_value:
+        return "N/A"
+
+    return (
+        f"Updated: {dt_value.strftime('%d %B %Y').upper()}\n"
+        f"{dt_value.strftime('%H:%M')}"
+    )
+
+
 # ---------------- COORDINATES ----------------
 def dms_to_decimal(deg, minutes, seconds, direction):
     value = float(deg) + float(minutes) / 60 + float(seconds) / 3600
@@ -1107,12 +1117,57 @@ def fetch_ims_station_info(station_name):
     }
 
 
+def parse_ims_datetime(value):
+    if not value:
+        return None
+
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+
+    if isinstance(value, (int, float)):
+        try:
+            if value > 10**12:
+                return datetime.utcfromtimestamp(value / 1000.0)
+            return datetime.utcfromtimestamp(value)
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    text = text.replace("Z", "+00:00")
+
+    try:
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            return dt.replace(tzinfo=None)
+        return dt
+    except Exception:
+        pass
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+
+    return None
+
+
 def recursive_find_first_datetime(node):
     if isinstance(node, dict):
         for key, value in node.items():
             low = str(key).lower()
             if "time" in low or "date" in low:
-                dt = parse_datetime_any(value)
+                dt = parse_ims_datetime(value)
                 if dt:
                     return dt
         for value in node.values():
@@ -1134,7 +1189,7 @@ def extract_latest_data_measurement_time(latest_data):
         return None
 
     for key in ("datetime", "dateTime", "time", "Time", "measurementTime", "MeasurementTime"):
-        dt = parse_datetime_any(latest_data.get(key))
+        dt = parse_ims_datetime(latest_data.get(key))
         if dt:
             return dt
 
@@ -1142,7 +1197,7 @@ def extract_latest_data_measurement_time(latest_data):
         node = latest_data.get(key)
         if isinstance(node, dict):
             for subkey in ("datetime", "dateTime", "time", "Time", "measurementTime", "MeasurementTime"):
-                dt = parse_datetime_any(node.get(subkey))
+                dt = parse_ims_datetime(node.get(subkey))
                 if dt:
                     return dt
 
@@ -1262,13 +1317,13 @@ def extract_value_from_item(item):
 
 def extract_item_datetime(item):
     return first_not_none(
-        parse_datetime_any(item.get("datetime")),
-        parse_datetime_any(item.get("dateTime")),
-        parse_datetime_any(item.get("time")),
-        parse_datetime_any(item.get("Time")),
-        parse_datetime_any(item.get("lastUpdate")),
-        parse_datetime_any(item.get("updatedAt")),
-        parse_datetime_any(item.get("createdAt")),
+        parse_ims_datetime(item.get("datetime")),
+        parse_ims_datetime(item.get("dateTime")),
+        parse_ims_datetime(item.get("time")),
+        parse_ims_datetime(item.get("Time")),
+        parse_ims_datetime(item.get("lastUpdate")),
+        parse_ims_datetime(item.get("updatedAt")),
+        parse_ims_datetime(item.get("createdAt")),
     )
 
 
@@ -1342,18 +1397,11 @@ def find_channel_entry(channel_map, canonical_name):
     return None
 
 
-def ims_api_time_to_utc(dt_naive):
-    if not dt_naive:
-        return None
-    return dt_naive - timedelta(hours=2)
-
-
 def build_ims_weather_message(station_name):
     obs = get_ims_station_weather(station_name)
 
     dt = obs.get("time_obs")
-    updated_utc = ims_api_time_to_utc(dt) if dt else None
-    updated = format_full_datetime_with_isr(updated_utc) if updated_utc else "N/A"
+    updated = format_ims_datetime(dt) if dt else "N/A"
 
     pressure_value = obs.get("BP")
     pressure_station_name = IMS_PRESSURE_STATIONS.get(normalize_station_lookup_name(station_name))
