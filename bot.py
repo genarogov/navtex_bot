@@ -132,9 +132,9 @@ WEATHER_KEYBOARD = [
     [GOV_BUTTON, NAVAREA_BUTTON],
     [FORECAST_BUTTON],
     ["🌤 Haifa Technion", HAIFA_BUOY_BUTTON],
-    ["🌤 Hadera Port", "🏝 Tel Aviv Coast"],
-    ["🌤 Ashqelon Port", "🌤 Ashdod Port"],
-    [ASHDOD_BUOY_BUTTON],
+    ["🌤 Hadera Port", "🌤 Ashdod Port"],
+    ["🌤 Ashqelon Port", ASHDOD_BUOY_BUTTON],
+    ["🏝 Tel Aviv Coast"],
 ]
 
 # ---------------- LOCK ----------------
@@ -1107,26 +1107,25 @@ def fetch_ims_station_info(station_name):
     }
 
 
-def recursive_find_first_datetime(node):
-    if isinstance(node, dict):
-        for key, value in node.items():
-            low = str(key).lower()
-            if "time" in low or "date" in low:
-                dt = parse_datetime_any(value)
-                if dt:
-                    return dt
-        for value in node.values():
-            dt = recursive_find_first_datetime(value)
-            if dt:
-                return dt
+def recursive_find_latest_datetime(node):
+    found = []
 
-    elif isinstance(node, list):
-        for item in node:
-            dt = recursive_find_first_datetime(item)
-            if dt:
-                return dt
+    def walk(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                low = str(key).lower()
+                if "time" in low or "date" in low:
+                    dt = parse_datetime_any(value)
+                    if dt:
+                        found.append(dt)
+                if isinstance(value, (dict, list)):
+                    walk(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
 
-    return None
+    walk(node)
+    return max(found) if found else None
 
 
 def extract_latest_data_measurement_time(latest_data):
@@ -1345,15 +1344,34 @@ def find_channel_entry(channel_map, canonical_name):
 def ims_api_time_to_utc(dt_naive):
     if not dt_naive:
         return None
-    return dt_naive - timedelta(hours=2)
+    ims_dt = dt_naive.replace(tzinfo=timezone(timedelta(hours=2)))
+    return ims_dt.astimezone(timezone.utc)
+
+
+def ims_api_time_to_local(dt_naive):
+    if not dt_naive:
+        return None
+    ims_dt = dt_naive.replace(tzinfo=timezone(timedelta(hours=2)))
+    return ims_dt.astimezone(ISRAEL_TZ)
+
+
+def format_ims_updated(dt_naive):
+    if not dt_naive:
+        return "Updated: N/A"
+
+    local_dt = ims_api_time_to_local(dt_naive)
+    utc_dt = ims_api_time_to_utc(dt_naive)
+    return (
+        f"Updated: {local_dt.strftime('%d %B %Y').upper()}\n"
+        f"{local_dt.strftime('%H:%M')} LT / {utc_dt.strftime('%H:%M')} UTC"
+    )
 
 
 def build_ims_weather_message(station_name):
     obs = get_ims_station_weather(station_name)
 
     dt = obs.get("time_obs")
-    updated_utc = ims_api_time_to_utc(dt) if dt else None
-    updated = format_full_datetime_with_isr(updated_utc) if updated_utc else "N/A"
+    updated = format_ims_updated(dt)
 
     pressure_value = obs.get("BP")
     pressure_station_name = IMS_PRESSURE_STATIONS.get(normalize_station_lookup_name(station_name))
@@ -1440,7 +1458,7 @@ def get_ims_station_weather(station_name):
     elif all_times:
         obs["time_obs"] = max(all_times)
     else:
-        obs["time_obs"] = recursive_find_first_datetime(latest_data)
+        obs["time_obs"] = recursive_find_latest_datetime(latest_data)
 
     obs["station_name"] = station_name
     obs["station_id"] = info["station_id"]
