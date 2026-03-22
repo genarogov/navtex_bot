@@ -8,9 +8,10 @@ import tempfile
 import threading
 import html
 from io import BytesIO
-from datetime import datetime, date, timezone, timedelta
+from datetime import datetime, date, timezone
 from email.header import decode_header
 from zoneinfo import ZoneInfo
+from xml.etree import ElementTree as ET
 
 import requests
 from telegram import ReplyKeyboardMarkup
@@ -21,7 +22,6 @@ from docx import Document
 TOKEN = os.getenv("BOT_TOKEN")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
-IMS_API_TOKEN = os.getenv("IMS_API_TOKEN", "").strip()
 
 # ---------------- CACHE ----------------
 CACHE_FILE = "cache.json"
@@ -52,14 +52,10 @@ CAMERI_BUOY_LOCATIONS = {
     ASHDOD_BUOY_BUTTON: {"name": "Ashdod buoy", "location_id": 2},
 }
 
-# ---------------- IMS WEATHER ----------------
-IMS_API_BASE = "https://api.ims.gov.il/v1/envista"
-IMS_META_CACHE_TTL = 6 * 60 * 60
-IMS_STATIONS_CACHE = {
-    "fetched_at": 0,
-    "stations": [],
-}
+# ---------------- IMS XML WEATHER ----------------
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
+IMS_XML_URL = "https://ims.gov.il/sites/default/files/ims_data/xml_files/imslasthour.xml"
+IMS_XML_TIMEOUT = 30
 
 IMS_STATIONS = {
     "🌤 Haifa Refineries": "HAIFA REFINERIES",
@@ -77,18 +73,43 @@ IMS_PRESSURE_STATIONS = {
     "ASHQELON PORT": "BET DAGAN",
 }
 
-IMS_CHANNEL_PREFERENCE = {
-    "TD": ["TD"],
-    "RH": ["RH"],
-    "BP": ["BP"],
-    "Rain": ["Rain"],
-    "WS": ["WS"],
-    "WD": ["WD"],
-    "WSmax": ["WS1mm", "WSmax"],
-    "WDmax": ["WDmax"],
+IMS_XML_STATION_ALIASES = {
+    "HAIFA REFINERIES": [
+        "HAIFA REFINERIES",
+        "HAIFA",
+        "HAIFA BAY",
+        "HAIFA PORT",
+    ],
+    "HADERA PORT": [
+        "HADERA PORT",
+        "HADERA",
+    ],
+    "TEL AVIV COAST": [
+        "TEL AVIV COAST",
+        "TEL AVIV",
+        "TEL AVIV-COAST",
+        "TEL AVIV COASTAL",
+    ],
+    "ASHDOD PORT": [
+        "ASHDOD PORT",
+        "ASHDOD",
+    ],
+    "ASHQELON PORT": [
+        "ASHQELON PORT",
+        "ASHQELON",
+        "ASHKELON PORT",
+        "ASHKELON",
+    ],
+    "AFEQ": [
+        "AFEQ",
+        "AFEQ",
+    ],
+    "BET DAGAN": [
+        "BET DAGAN",
+        "BET-DAGAN",
+        "BETDAGAN",
+    ],
 }
-
-IMS_FIXED_WINTER_TZ = timezone(timedelta(hours=2))
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
 FORECAST_BUTTON = "🌤 Forecast Taurus Delta Crusade"
@@ -312,6 +333,10 @@ def format_full_datetime_with_isr(dt_utc):
         f"Updated: {dt_utc.strftime('%d %B %Y').upper()}\n"
         f"{dt_utc.strftime('%H:%M')} UTC / {dt_isr.strftime('%H:%M')} LT"
     )
+
+
+def normalize_name(text):
+    return re.sub(r"[^A-Z0-9]+", " ", str(text or "").upper()).strip()
 
 
 # ---------------- COORDINATES ----------------
@@ -929,272 +954,167 @@ def build_cameri_buoy_message(button_text):
     )
 
 
-# ---------------- IMS WEATHER ----------------
-def ims_headers():
-    if not IMS_API_TOKEN:
-        raise Exception("IMS_API_TOKEN is empty")
-    return {
-        "Authorization": f"ApiToken {IMS_API_TOKEN}",
+# ---------------- IMS XML WEATHER ----------------
+def fetch_ims_xml_root():
+    headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
+        "Accept": "application/xml,text/xml,*/*",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
-
-
-def ims_request_json(path):
-    url = f"{IMS_API_BASE}{path}"
-    r = requests.get(url, headers=ims_headers(), timeout=30)
+    r = requests.get(IMS_XML_URL, headers=headers, timeout=IMS_XML_TIMEOUT)
     r.raise_for_status()
-
-    text = (r.text or "").strip()
-    if not text:
-        raise Exception(f"IMS empty response for {path}")
-
+    if not (r.text or "").strip():
+        raise Exception("IMS XML empty response")
     try:
-        return r.json()
-    except Exception:
-        sample = text[:300].replace("\n", " ").replace("\r", " ")
-        raise Exception(f"IMS non-JSON response for {path}: {sample}")
+        return ET.fromstring(r.content)
+    except Exception as e:
+        raise Exception(f"IMS XML parse error: {e}")
 
 
-def ims_extract_station_id(station):
-    return first_not_none(
-        station.get("stationId"),
-        station.get("station_id"),
-        station.get("id"),
-        station.get("StationId"),
-        station.get("StationID"),
-    )
+def xml_local_name(tag):
+    return tag.split("}", 1)[-1] if "}" in tag else tag
 
 
-def ims_extract_station_name(station):
-    return str(first_not_none(
-        station.get("name"),
-        station.get("stationName"),
-        station.get("station_name"),
-        station.get("title"),
-        station.get("label"),
-    ) or "").strip()
+def find_first_text_by_names(node, names):
+    wanted = {n.upper() for n in names}
+    for elem in node.iter():
+        if xml_local_name(elem.tag).upper() in wanted:
+            text = (elem.text or "").strip()
+            if text:
+                return text
+    return None
 
 
-def normalize_station_lookup_name(name):
-    return re.sub(r"\s+", " ", str(name or "").upper()).strip()
-
-
-def fetch_ims_stations():
-    now = time.time()
-    if IMS_STATIONS_CACHE["stations"] and now - IMS_STATIONS_CACHE["fetched_at"] < IMS_META_CACHE_TTL:
-        return IMS_STATIONS_CACHE["stations"]
-
-    stations = ims_request_json("/stations")
-    if not isinstance(stations, list):
-        raise Exception("IMS stations response is not a list")
-
-    IMS_STATIONS_CACHE["stations"] = stations
-    IMS_STATIONS_CACHE["fetched_at"] = now
-    return stations
-
-
-def find_ims_station_by_name(target_name):
-    wanted = normalize_station_lookup_name(target_name)
-    stations = fetch_ims_stations()
-
-    exact = []
-    partial = []
-
-    for station in stations:
-        st_name = ims_extract_station_name(station)
-        st_norm = normalize_station_lookup_name(st_name)
-        if not st_norm:
-            continue
-
-        if st_norm == wanted:
-            exact.append(station)
-        elif wanted in st_norm or st_norm in wanted:
-            partial.append(station)
-
-    if exact:
-        return exact[0]
-    if partial:
-        return partial[0]
-
-    raise Exception(f"IMS station not found: {target_name}")
-
-
-def parse_datetime_any(value):
-    if not value:
+def parse_xml_time_to_utc(time_text):
+    if not time_text:
         return None
 
-    if isinstance(value, (int, float)):
-        try:
-            if value > 10**12:
-                return datetime.utcfromtimestamp(value / 1000.0)
-            return datetime.utcfromtimestamp(value)
-        except Exception:
-            return None
-
-    text = str(value).strip()
-    if not text:
+    raw = str(time_text).strip()
+    if not raw:
         return None
 
-    text = text.replace("Z", "+00:00")
-
-    try:
-        dt = datetime.fromisoformat(text)
-        if dt.tzinfo is not None:
-            return dt.replace(tzinfo=None)
-        return dt
-    except Exception:
-        pass
-
-    for fmt in (
+    patterns = [
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
         "%d/%m/%Y %H:%M:%S",
         "%d/%m/%Y %H:%M",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
         "%Y/%m/%d %H:%M:%S",
         "%Y/%m/%d %H:%M",
-    ):
+    ]
+
+    dt = None
+    for fmt in patterns:
         try:
-            return datetime.strptime(text, fmt)
+            dt = datetime.strptime(raw, fmt)
+            break
         except Exception:
             continue
 
-    return None
+    if dt is None:
+        m = re.search(
+            r'(\d{4})[/-](\d{2})[/-](\d{2}).*?(\d{2}):(\d{2})(?::(\d{2}))?',
+            raw
+        )
+        if m:
+            sec = int(m.group(6) or 0)
+            dt = datetime(
+                int(m.group(1)),
+                int(m.group(2)),
+                int(m.group(3)),
+                int(m.group(4)),
+                int(m.group(5)),
+                sec
+            )
 
-
-def ims_measurement_to_utc(dt_value):
-    if not dt_value:
+    if dt is None:
         return None
 
-    dt = dt_value if isinstance(dt_value, datetime) else parse_datetime_any(dt_value)
-    if not dt:
-        return None
-
-    dt = dt.replace(tzinfo=IMS_FIXED_WINTER_TZ)
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    # XML feed is site-facing recent data. Treat raw time as Israel local time.
+    dt_local = dt.replace(tzinfo=ISRAEL_TZ)
+    return dt_local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def extract_latest_measurement_time(latest_data):
-    if not isinstance(latest_data, dict):
-        return None
-
-    for key in ("datetime", "dateTime", "time", "Time", "measurementTime", "MeasurementTime"):
-        dt = parse_datetime_any(latest_data.get(key))
-        if dt:
-            return dt
-
-    return None
-
-
-def extract_latest_channels(latest_data):
-    if not isinstance(latest_data, dict):
-        return []
-
-    channels = first_not_none(
-        latest_data.get("channels"),
-        latest_data.get("Channels"),
-        latest_data.get("data"),
-        latest_data.get("Data"),
+def extract_station_name_from_xml_station(node):
+    return first_not_none(
+        find_first_text_by_names(node, ["Name", "StationName", "EnglishName", "StationEnglishName"]),
+        find_first_text_by_names(node, ["name", "stationname", "englishname"]),
     )
 
-    return channels if isinstance(channels, list) else []
+
+def flatten_xml_station_values(node):
+    data = {}
+    for elem in node.iter():
+        name = xml_local_name(elem.tag)
+        text = (elem.text or "").strip()
+        if not text:
+            continue
+        key = normalize_name(name)
+        if key and key not in data:
+            data[key] = text
+    return data
 
 
-def build_latest_channel_map(latest_data):
-    result = {}
+def resolve_ims_xml_station_node(target_station_name, root):
+    wanted = normalize_name(target_station_name)
+    aliases = [wanted] + [normalize_name(x) for x in IMS_XML_STATION_ALIASES.get(target_station_name, [])]
 
-    for item in extract_latest_channels(latest_data):
-        if not isinstance(item, dict):
+    candidates = []
+    for node in root.iter():
+        tag_name = xml_local_name(node.tag).upper()
+        if "STATION" not in tag_name:
             continue
 
-        name = str(first_not_none(
-            item.get("name"),
-            item.get("Name"),
-            item.get("alias"),
-            item.get("Alias"),
-            item.get("symbol"),
-            item.get("Symbol"),
-        ) or "").strip().upper()
+        st_name = extract_station_name_from_xml_station(node)
+        if not st_name:
+            continue
 
-        if name:
-            result[name] = item
+        st_norm = normalize_name(st_name)
+        if st_norm in aliases:
+            return node
 
-    return result
+        if any(a in st_norm or st_norm in a for a in aliases if a):
+            candidates.append(node)
+
+    if candidates:
+        return candidates[0]
+
+    raise Exception(f"IMS XML station not found: {target_station_name}")
 
 
-def pick_channel_item(latest_channel_map, canonical_key):
-    for candidate in IMS_CHANNEL_PREFERENCE.get(canonical_key, []):
-        item = latest_channel_map.get(candidate.upper())
-        if item:
-            return item
+def pick_xml_value(data, *keys):
+    normalized_keys = [normalize_name(k) for k in keys]
+    for key in normalized_keys:
+        if key in data:
+            return data[key]
     return None
-
-
-def channel_item_is_valid(item):
-    valid = item.get("valid", item.get("Valid"))
-    status = item.get("status", item.get("Status"))
-
-    valid_ok = valid in (None, "", True, "true", "True", 1, "1")
-    status_ok = status in (None, "", 1, "1")
-
-    return valid_ok and status_ok
-
-
-def channel_item_value(item):
-    return first_not_none(
-        item.get("value"),
-        item.get("Value"),
-        item.get("lastValue"),
-        item.get("currentValue"),
-        item.get("avg"),
-    )
-
-
-def fetch_ims_station_latest(station_name):
-    station = find_ims_station_by_name(station_name)
-    station_id = ims_extract_station_id(station)
-    if station_id is None:
-        raise Exception(f"IMS station id not found for: {station_name}")
-
-    latest_data = ims_request_json(f"/stations/{station_id}/data/latest")
-    return station_id, latest_data
 
 
 def get_ims_station_weather(station_name):
-    station_id, latest_data = fetch_ims_station_latest(station_name)
-    latest_channel_map = build_latest_channel_map(latest_data)
+    root = fetch_ims_xml_root()
+    station_node = resolve_ims_xml_station_node(station_name, root)
+    data = flatten_xml_station_values(station_node)
+
+    time_text = pick_xml_value(
+        data,
+        "Time", "DateTime", "MeasurementTime", "LastUpdate", "ObsTime"
+    )
+    time_utc = parse_xml_time_to_utc(time_text)
 
     obs = {
-        "TD": None,
-        "RH": None,
-        "BP": None,
-        "Rain": None,
-        "WS": None,
-        "WD": None,
-        "WSmax": None,
-        "WDmax": None,
-        "time_obs": None,
-        "station_id": station_id,
+        "TD": pick_xml_value(data, "TD", "Temperature", "AirTemperature"),
+        "RH": pick_xml_value(data, "RH", "RelativeHumidity", "Humidity"),
+        "BP": pick_xml_value(data, "BP", "Pressure", "SLP", "StationPressure"),
+        "Rain": pick_xml_value(data, "Rain", "Rain1h", "Rainfall"),
+        "WS": pick_xml_value(data, "WS", "Fs", "WindSpeed"),
+        "WD": pick_xml_value(data, "WD", "WindDirection", "Dd"),
+        "WSmax": pick_xml_value(data, "Ws10mm", "WS1mm", "WSmax", "MaxWindSpeed", "MaxGust"),
+        "WDmax": pick_xml_value(data, "Wdmax", "WDmax", "MaxWindDirection"),
+        "time_obs": time_utc,
         "station_name": station_name,
     }
-
-    measurement_time = extract_latest_measurement_time(latest_data)
-    if measurement_time:
-        obs["time_obs"] = ims_measurement_to_utc(measurement_time)
-
-    for key in ("TD", "RH", "BP", "Rain", "WS", "WD", "WSmax", "WDmax"):
-        item = pick_channel_item(latest_channel_map, key)
-        if not item:
-            continue
-        if not channel_item_is_valid(item):
-            continue
-
-        value = channel_item_value(item)
-        if value in (None, ""):
-            continue
-
-        obs[key] = value
-
     return obs
 
 
@@ -1204,14 +1124,14 @@ def build_ims_weather_message(station_name):
     updated = format_full_datetime_with_isr(obs.get("time_obs"))
 
     pressure_value = obs.get("BP")
-    pressure_station_name = IMS_PRESSURE_STATIONS.get(normalize_station_lookup_name(station_name))
+    pressure_station_name = IMS_PRESSURE_STATIONS.get(normalize_name(station_name))
     if pressure_station_name:
         try:
             pressure_obs = get_ims_station_weather(pressure_station_name)
             if pressure_obs and pressure_obs.get("BP") not in (None, ""):
                 pressure_value = pressure_obs.get("BP")
         except Exception as e:
-            print("IMS pressure fallback error:", e)
+            print("IMS XML pressure fallback error:", e)
 
     wind_kn = ms_to_knots(obs.get("WS"))
     gust_kn = ms_to_knots(obs.get("WSmax"))
