@@ -53,7 +53,7 @@ CAMERI_BUOY_LOCATIONS = {
 }
 
 # ---------------- IMS WEATHER ----------------
-IMS_API_BASE = "https://api.ims.gov.il/v1/envista"
+IMS_API_BASE = "https://api.ims.gov.il/v1/Envista"
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 IMS_STATIONS = {
@@ -72,6 +72,7 @@ IMS_PRESSURE_STATIONS = {
     "ASHQELON PORT": "BET DAGAN",
 }
 
+# pressure fallback stations
 IMS_EXTRA_STATION_IDS = {
     "AFEQ": 79,
     "BET DAGAN": 54,
@@ -934,18 +935,19 @@ def ims_headers():
 def ims_request_json(path):
     url = f"{IMS_API_BASE}{path}"
     r = requests.get(url, headers=ims_headers(), timeout=30)
-
     r.raise_for_status()
 
+    content_type = (r.headers.get("Content-Type") or "").lower()
     text = (r.text or "").strip()
+
     if not text:
         raise Exception(f"IMS empty response for {path}")
 
-    try:
-        return r.json()
-    except Exception:
+    if "json" not in content_type:
         sample = text[:300].replace("\n", " ").replace("\r", " ")
         raise Exception(f"IMS non-JSON response for {path}: {sample}")
+
+    return r.json()
 
 
 def parse_datetime_any(value):
