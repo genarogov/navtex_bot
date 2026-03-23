@@ -938,20 +938,31 @@ def build_cameri_buoy_message(button_text):
     if not config:
         return "Buoy config not found."
 
-    latest = fetch_cameri_buoy_latest(config["location_id"])
+    try:
+        latest = fetch_cameri_buoy_latest(config["location_id"])
+    except Exception as e:
+        print(f"CAMERI buoy source error for {config['name']}: {e}")
+        return f"📍 {config['name']}
+Buoy under repair."
+
     if not latest:
-        return f"📍 {config['name']}\nNo data."
+        return f"📍 {config['name']}
+No data."
 
     updated = format_full_datetime_with_isr(latest["time"]) if latest.get("time") else "N/A"
 
     return (
-        f"📍 {config['name']}\n"
-        f"{updated}\n\n"
-        f"Wave height: {format_float(latest.get('hs'), 2)} m\n"
-        f"Peak period: {format_float(latest.get('tp'), 1)} s\n"
+        f"📍 {config['name']}
+"
+        f"{updated}
+
+"
+        f"Wave height: {format_float(latest.get('hs'), 2)} m
+"
+        f"Peak period: {format_float(latest.get('tp'), 1)} s
+"
         f"Water temperature: {format_float(latest.get('temp'), 1)} °C"
     )
-
 
 # ---------------- IMS WEATHER ----------------
 def ims_headers():
@@ -1363,7 +1374,7 @@ def format_ims_datetime_with_local_and_utc(dt_naive):
     dt_utc = ims_api_time_to_utc(dt_naive)
     return (
         f"Updated: {dt_local.strftime('%d %B %Y').upper()}\n"
-        f"{dt_local.strftime('%H:%M')} LT / {dt_utc.strftime('%H:%M')} UTC"
+        f"{dt_utc.strftime('%H:%M')} UTC / {dt_local.strftime('%H:%M')} LT"
     )
 
 
@@ -1844,10 +1855,7 @@ def handle_weather_button(update, context):
         return
 
     if text in CAMERI_BUOY_LOCATIONS:
-        try:
-            msg = build_cameri_buoy_message(text)
-        except Exception as e:
-            msg = f"CAMERI buoy error: {e}"
+        msg = build_cameri_buoy_message(text)
 
         for chunk in split_plain_message(msg, limit=4000):
             update.message.reply_text(chunk)
