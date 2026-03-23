@@ -938,31 +938,20 @@ def build_cameri_buoy_message(button_text):
     if not config:
         return "Buoy config not found."
 
-    try:
-        latest = fetch_cameri_buoy_latest(config["location_id"])
-    except Exception as e:
-        print(f"CAMERI buoy source error for {config['name']}: {e}")
-        return f"📍 {config['name']}
-Buoy under repair."
-
+    latest = fetch_cameri_buoy_latest(config["location_id"])
     if not latest:
-        return f"📍 {config['name']}
-No data."
+        return f"📍 {config['name']}\nNo data."
 
     updated = format_full_datetime_with_isr(latest["time"]) if latest.get("time") else "N/A"
 
     return (
-        f"📍 {config['name']}
-"
-        f"{updated}
-
-"
-        f"Wave height: {format_float(latest.get('hs'), 2)} m
-"
-        f"Peak period: {format_float(latest.get('tp'), 1)} s
-"
+        f"📍 {config['name']}\n"
+        f"{updated}\n\n"
+        f"Wave height: {format_float(latest.get('hs'), 2)} m\n"
+        f"Peak period: {format_float(latest.get('tp'), 1)} s\n"
         f"Water temperature: {format_float(latest.get('temp'), 1)} °C"
     )
+
 
 # ---------------- IMS WEATHER ----------------
 def ims_headers():
@@ -1855,7 +1844,10 @@ def handle_weather_button(update, context):
         return
 
     if text in CAMERI_BUOY_LOCATIONS:
-        msg = build_cameri_buoy_message(text)
+        try:
+            msg = build_cameri_buoy_message(text)
+        except Exception as e:
+            msg = f"CAMERI buoy error: {e}"
 
         for chunk in split_plain_message(msg, limit=4000):
             update.message.reply_text(chunk)
