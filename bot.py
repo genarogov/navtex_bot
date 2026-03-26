@@ -112,7 +112,7 @@ IMS_CHANNEL_ALIASES = {
 
 # ---------------- WEATHER / FORECAST BUTTONS ----------------
 FORECAST_BUTTON = "🌤 Forecast Taurus Delta Crusade"
-GOV_BUTTON = "📜 gov.il"
+GOV_BUTTON = "📜 Raspan"
 NAVAREA_BUTTON = "📜 Navarea III"
 
 WEATHER_BUTTONS = [
