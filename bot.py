@@ -380,6 +380,21 @@ def replace_coordinates(text, pattern, parser):
     return text
 
 
+def add_mmsi_links(text):
+    pattern = re.compile(
+        r'(?P<prefix>MMSI\s*[:#=]?\s*)(?P<mmsi>\d{9})',
+        re.I
+    )
+
+    def repl(m):
+        prefix = m.group("prefix")
+        mmsi = m.group("mmsi")
+        url = f"https://www.marinetraffic.com/en/ais/details/ships/mmsi:{mmsi}"
+        return f'{prefix}<a href="{url}">{mmsi}</a>'
+
+    return pattern.sub(repl, text)
+
+
 def add_coordinate_links(text):
     safe = html_escape(text or "")
 
@@ -476,6 +491,8 @@ def add_coordinate_links(text):
         return lat, lon
 
     safe = replace_coordinates(safe, pattern_decimal, parse_decimal)
+
+    safe = add_mmsi_links(safe)
 
     return safe
 
