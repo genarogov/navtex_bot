@@ -382,10 +382,9 @@ def replace_coordinates(text, pattern, parser):
 
 def add_mmsi_links(text):
     pattern = re.compile(
-        r'(?P<prefix>MMSI\s*[:#=]?\s*)(?P<mmsi>\d{9})',
-        re.I
-    )
-
+    r'(?P<prefix>\bMMSI\b\s*[:#=\-]?\s*)(?P<mmsi>\d{9})\b',
+    re.I
+)
     def repl(m):
         prefix = m.group("prefix")
         mmsi = m.group("mmsi")
