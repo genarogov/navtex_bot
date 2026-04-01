@@ -30,15 +30,15 @@ TAIL_SCAN_LIMIT = 40
 # ---------------- GMAIL FILTERS ----------------
 SENDER_KEYWORD = "mot.gov.il"
 
-SUBJECT_PATTERNS = [
+SUBJECT_VARIANTS = [
     "notice to mariner",
+    "notice-to-mariner",
     "notice to-mariner",
     "notice-to mariner",
-    "notice-to-mariner",
     "notice to mariners",
     "notice-to-mariners",
-    "notice to mariner ",
-    "notice to-mariner ",
+    "notice to-mariners",
+    "notice-to mariners",
 ]
 
 # ---------------- METAREA ----------------
@@ -234,36 +234,38 @@ def subject_matches_notice(subject):
     raw = decode_mime_words(subject or "").lower().strip()
     normalized = normalize_subject_for_match(subject)
 
-    variants = [
-        "notice to mariner",
-        "notice to mariners",
-        "notice to-mariner",
-        "notice-to-mariner",
-        "notice-to mariner",
-        "notice-to-mariners",
-    ]
-
-    for variant in variants:
+    for variant in SUBJECT_VARIANTS:
         if variant in raw:
             return True
 
-    for pattern in SUBJECT_PATTERNS:
-        if pattern in raw:
-            return True
-
-    if "notice to mariner" in normalized:
+    if "notice to mariner" in normalized or "notice to mariners" in normalized:
         return True
 
-    if "notice to mariners" in normalized:
+    if re.search(r"notice.*mariner(?:s)?", raw, re.I):
         return True
 
-    if re.search(r"notice.*mariner(s)?", raw, re.I):
-        return True
-
-    if re.search(r"notice.*mariner(s)?", normalized, re.I):
+    if re.search(r"notice.*mariner(?:s)?", normalized, re.I):
         return True
 
     return False
+
+
+def is_open_ended_valid_text(value):
+    norm = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    norm = norm.replace("-", " ")
+    return norm in {
+        "till further notice",
+        "until further notice",
+        "valid till further notice",
+        "valid until further notice",
+    }
+
+
+def normalize_valid_value(value):
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    if is_open_ended_valid_text(value):
+        return "Till further notice"
+    return value or "N/A"
 
 
 def html_escape(text):
@@ -669,7 +671,7 @@ def in_navarea_box(lat, lon):
 
 # ---------------- VALID STATUS ----------------
 def get_status_icon(valid):
-    if not valid or valid == "N/A":
+    if not valid or valid == "N/A" or is_open_ended_valid_text(valid):
         return "✅"
 
     for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d"):
@@ -683,6 +685,9 @@ def get_status_icon(valid):
 
 
 def is_valid_date_active(valid):
+    if is_open_ended_valid_text(valid):
+        return True
+
     if not valid or valid == "N/A":
         return False
 
@@ -752,9 +757,19 @@ def extract_notice(doc_text):
         if m_start:
             start = m_start.group(1).strip()
 
-        m_valid = re.search(r'Valid[:\s]*([\d/]+)', doc_text, re.I)
-        if m_valid:
-            valid = m_valid.group(1).strip()
+        m_valid_open = re.search(
+            r'Valid(?:ity)?[:\s-]*((?:till|until)\s+further\s+notice)',
+            doc_text,
+            re.I
+        )
+        if m_valid_open:
+            valid = normalize_valid_value(m_valid_open.group(1))
+        else:
+            m_valid = re.search(r'Valid[:\s]*([\d/]+)', doc_text, re.I)
+            if m_valid:
+                valid = m_valid.group(1).strip()
+
+    valid = normalize_valid_value(valid)
 
     body = []
     skip_next_no = False
@@ -775,6 +790,9 @@ def extract_notice(doc_text):
             continue
 
         if re.match(r'^start[:\s]', l, re.I):
+            continue
+
+        if re.match(r'^valid(?:ity)?[:\s-]', l, re.I):
             continue
 
         if "valid" in l.lower() and re.search(r'\d{2}/\d{2}/\d{4}', l):
