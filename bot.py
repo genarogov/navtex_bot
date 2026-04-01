@@ -754,12 +754,9 @@ def get_status_icon(valid):
     if not valid or valid == "N/A" or is_open_ended_valid_text(valid):
         return "✅"
 
-    for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d"):
-        try:
-            d = datetime.strptime(valid.strip(), fmt).date()
-            return "❌" if d < date.today() else "✅"
-        except Exception:
-            pass
+    dt = parse_date_flexible(valid)
+    if dt:
+        return "❌" if dt.date() < date.today() else "✅"
 
     return "✅"
 
@@ -771,12 +768,9 @@ def is_valid_date_active(valid):
     if not valid or valid == "N/A":
         return False
 
-    for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d"):
-        try:
-            d = datetime.strptime(valid.strip(), fmt).date()
-            return d >= date.today()
-        except Exception:
-            pass
+    dt = parse_date_flexible(valid)
+    if dt:
+        return dt.date() >= date.today()
 
     return False
 
