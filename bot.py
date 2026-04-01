@@ -283,23 +283,40 @@ def parse_date_flexible(text):
     if not text:
         return None
 
+    cleaned = text.replace(",", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
     for fmt in (
         "%d %B %Y",
         "%d %b %Y",
+        "%d %B %y",
+        "%d %b %y",
         "%d/%m/%Y",
+        "%d/%m/%y",
         "%d.%m.%Y",
+        "%d.%m.%y",
         "%Y-%m-%d",
         "%d-%m-%Y",
+        "%d-%m-%y",
     ):
         try:
-            return datetime.strptime(text, fmt)
+            return datetime.strptime(cleaned, fmt)
         except Exception:
             pass
 
-    m = re.search(r"\b(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b", text)
-    if m:
-        candidate = f"{m.group(1)} {m.group(2)} {m.group(3)}"
-        for fmt in ("%d %B %Y", "%d %b %Y"):
+    patterns = [
+        (r"\b(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b", ("%d %B %Y", "%d %b %Y")),
+        (r"\b(\d{1,2})\s+([A-Za-z]+)\s+(\d{2})\b", ("%d %B %y", "%d %b %y")),
+        (r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{4})\b", ("%d/%m/%Y", "%d.%m.%Y", "%d-%m-%Y")),
+        (r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{2})\b", ("%d/%m/%y", "%d.%m.%y", "%d-%m-%y")),
+    ]
+
+    for pattern, formats in patterns:
+        m = re.search(pattern, cleaned)
+        if not m:
+            continue
+        candidate = m.group(1)
+        for fmt in formats:
             try:
                 return datetime.strptime(candidate, fmt)
             except Exception:
@@ -320,14 +337,14 @@ def clean_date_value(value):
 
 def find_labeled_date(doc_text, label):
     lines = [line.strip() for line in str(doc_text or "").splitlines() if line.strip()]
-    label_pattern = re.compile(rf"^{label}(?:ity)?\b", re.I)
+    label_pattern = re.compile(rf"\b{label}(?:ity)?\b", re.I)
 
     for idx, line in enumerate(lines):
         if not label_pattern.search(line):
             continue
 
-        after = re.split(rf"^{label}(?:ity)?\s*[:\-]?\s*", line, maxsplit=1, flags=re.I)
-        candidate = after[1].strip() if len(after) > 1 else ""
+        m_inline = re.search(rf"\b{label}(?:ity)?\b\s*[:\-]?\s*(.+)$", line, re.I)
+        candidate = m_inline.group(1).strip() if m_inline else ""
         if candidate:
             dt = parse_date_flexible(candidate)
             if dt:
