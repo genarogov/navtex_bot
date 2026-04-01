@@ -29,7 +29,17 @@ TAIL_SCAN_LIMIT = 40
 
 # ---------------- GMAIL FILTERS ----------------
 SENDER_KEYWORD = "mot.gov.il"
-SUBJECT_KEYWORD = "notice to mariner"
+
+SUBJECT_PATTERNS = [
+    "notice to mariner",
+    "notice to-mariner",
+    "notice-to mariner",
+    "notice-to-mariner",
+    "notice to mariners",
+    "notice-to-mariners",
+    "notice to mariner ",
+    "notice to-mariner ",
+]
 
 # ---------------- METAREA ----------------
 METAREA_URL = "https://wwmiws.wmo.int/index.php/metareas/bulletinset_download/3/json"
@@ -210,6 +220,50 @@ def decode_mime_words(value):
 def normalize_message_id(msg):
     raw = (msg.get("Message-ID") or "").strip()
     return raw.strip("<>").strip().lower()
+
+
+def normalize_subject_for_match(text):
+    text = decode_mime_words(text or "").lower().strip()
+    text = text.replace("_", " ")
+    text = re.sub(r"[-–—]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def subject_matches_notice(subject):
+    raw = decode_mime_words(subject or "").lower().strip()
+    normalized = normalize_subject_for_match(subject)
+
+    variants = [
+        "notice to mariner",
+        "notice to mariners",
+        "notice to-mariner",
+        "notice-to-mariner",
+        "notice-to mariner",
+        "notice-to-mariners",
+    ]
+
+    for variant in variants:
+        if variant in raw:
+            return True
+
+    for pattern in SUBJECT_PATTERNS:
+        if pattern in raw:
+            return True
+
+    if "notice to mariner" in normalized:
+        return True
+
+    if "notice to mariners" in normalized:
+        return True
+
+    if re.search(r"notice.*mariner(s)?", raw, re.I):
+        return True
+
+    if re.search(r"notice.*mariner(s)?", normalized, re.I):
+        return True
+
+    return False
 
 
 def html_escape(text):
@@ -1500,7 +1554,7 @@ def message_matches(msg):
     if SENDER_KEYWORD.lower() not in from_header.lower():
         return None
 
-    if SUBJECT_KEYWORD.lower() not in subject.lower():
+    if not subject_matches_notice(subject):
         return None
 
     return {
