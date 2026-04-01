@@ -241,10 +241,10 @@ def subject_matches_notice(subject):
     if "notice to mariner" in normalized or "notice to mariners" in normalized:
         return True
 
-    if re.search(r"notice.*mariner(?:s)?", raw, re.I):
+    if re.search(r"\bnotice\b.*\bmariner(?:s)?\b", raw, re.I):
         return True
 
-    if re.search(r"notice.*mariner(?:s)?", normalized, re.I):
+    if re.search(r"\bnotice\b.*\bmariner(?:s)?\b", normalized, re.I):
         return True
 
     return False
@@ -266,6 +266,86 @@ def normalize_valid_value(value):
     if is_open_ended_valid_text(value):
         return "Till further notice"
     return value or "N/A"
+
+
+def normalize_spaces(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def format_parsed_date(dt):
+    if not dt:
+        return "N/A"
+    return dt.strftime("%d %B %Y")
+
+
+def parse_date_flexible(text):
+    text = normalize_spaces(text)
+    if not text:
+        return None
+
+    for fmt in (
+        "%d %B %Y",
+        "%d %b %Y",
+        "%d/%m/%Y",
+        "%d.%m.%Y",
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            pass
+
+    m = re.search(r"\b(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b", text)
+    if m:
+        candidate = f"{m.group(1)} {m.group(2)} {m.group(3)}"
+        for fmt in ("%d %B %Y", "%d %b %Y"):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except Exception:
+                pass
+
+    return None
+
+
+def clean_date_value(value):
+    value = normalize_spaces(value)
+    if not value:
+        return "N/A"
+    dt = parse_date_flexible(value)
+    if dt:
+        return format_parsed_date(dt)
+    return value
+
+
+def find_labeled_date(doc_text, label):
+    lines = [line.strip() for line in str(doc_text or "").splitlines() if line.strip()]
+    label_pattern = re.compile(rf"^{label}(?:ity)?\b", re.I)
+
+    for idx, line in enumerate(lines):
+        if not label_pattern.search(line):
+            continue
+
+        after = re.split(rf"^{label}(?:ity)?\s*[:\-]?\s*", line, maxsplit=1, flags=re.I)
+        candidate = after[1].strip() if len(after) > 1 else ""
+        if candidate:
+            dt = parse_date_flexible(candidate)
+            if dt:
+                return format_parsed_date(dt)
+
+            if label.lower() == "valid" and is_open_ended_valid_text(candidate):
+                return normalize_valid_value(candidate)
+
+        if idx + 1 < len(lines):
+            next_line = lines[idx + 1].strip()
+            dt = parse_date_flexible(next_line)
+            if dt:
+                return format_parsed_date(dt)
+
+            if label.lower() == "valid" and is_open_ended_valid_text(next_line):
+                return normalize_valid_value(next_line)
+
+    return None
 
 
 def html_escape(text):
@@ -748,15 +828,15 @@ def extract_notice(doc_text):
     if m:
         notice = m.group(1).strip()
 
-    m = re.search(r'Start[:\s]*([\d/]+).*?VALID[:\s]*([\d/]+)', doc_text, re.I | re.S)
-    if m:
-        start = m.group(1).strip()
-        valid = m.group(2).strip()
-    else:
-        m_start = re.search(r'Start[:\s]*([\d/]+)', doc_text, re.I)
-        if m_start:
-            start = m_start.group(1).strip()
+    start_found = find_labeled_date(doc_text, "Start")
+    if start_found:
+        start = start_found
 
+    valid_found = find_labeled_date(doc_text, "Valid")
+    if valid_found:
+        valid = valid_found
+
+    if valid == "N/A":
         m_valid_open = re.search(
             r'Valid(?:ity)?[:\s-]*((?:till|until)\s+further\s+notice)',
             doc_text,
@@ -764,15 +844,14 @@ def extract_notice(doc_text):
         )
         if m_valid_open:
             valid = normalize_valid_value(m_valid_open.group(1))
-        else:
-            m_valid = re.search(r'Valid[:\s]*([\d/]+)', doc_text, re.I)
-            if m_valid:
-                valid = m_valid.group(1).strip()
 
     valid = normalize_valid_value(valid)
+    start = clean_date_value(start)
 
     body = []
     skip_next_no = False
+    skip_next_start_date = False
+    skip_next_valid_date = False
 
     for line in doc_text.splitlines():
         l = line.strip()
@@ -789,13 +868,28 @@ def extract_notice(doc_text):
             skip_next_no = False
             continue
 
-        if re.match(r'^start[:\s]', l, re.I):
+        if skip_next_start_date and parse_date_flexible(l):
+            skip_next_start_date = False
+            continue
+        skip_next_start_date = False
+
+        if skip_next_valid_date and (parse_date_flexible(l) or is_open_ended_valid_text(l)):
+            skip_next_valid_date = False
+            continue
+        skip_next_valid_date = False
+
+        if re.match(r'^start(?:ing)?\b', l, re.I):
+            after = re.split(r'^start(?:ing)?\s*[:\-]?\s*', l, maxsplit=1, flags=re.I)
+            tail = after[1].strip() if len(after) > 1 else ""
+            if not tail or not parse_date_flexible(tail):
+                skip_next_start_date = True
             continue
 
-        if re.match(r'^valid(?:ity)?[:\s-]', l, re.I):
-            continue
-
-        if "valid" in l.lower() and re.search(r'\d{2}/\d{2}/\d{4}', l):
+        if re.match(r'^valid(?:ity)?\b', l, re.I):
+            after = re.split(r'^valid(?:ity)?\s*[:\-]?\s*', l, maxsplit=1, flags=re.I)
+            tail = after[1].strip() if len(after) > 1 else ""
+            if not tail or (not parse_date_flexible(tail) and not is_open_ended_valid_text(tail)):
+                skip_next_valid_date = True
             continue
 
         body.append(l)
@@ -806,6 +900,7 @@ def extract_notice(doc_text):
         "valid": valid,
         "body": "\n".join(body).strip() or "N/A"
     }
+
 
 
 def build_message(payload):
